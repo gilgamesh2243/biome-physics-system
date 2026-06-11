@@ -46,11 +46,17 @@ export function simulateBiome(
   for (let hourIndex = 0; hourIndex < input.hours; hourIndex++) {
     const climate = input.climate[hourIndex % input.climate.length];
 
-    const compute = calculateComputeLoad(input.profile.compute);
+    const initialCompute = calculateComputeLoad(input.profile.compute);
 
     const biomass = calculateBiomassState({ profile: input.profile.biomass, air });
 
-    const actions = chooseControlActions({ air, water, compute, policy: input.controlPolicy });
+    const actions = chooseControlActions({
+      air,
+      water,
+      compute: initialCompute,
+      policy: input.controlPolicy,
+      thermalControl: input.profile.thermalControl,
+    });
 
     function getRunWaterCaptureIntensity(actions: ControlAction[]): number {
       const action = actions.find((a) => a.type === "RUN_WATER_CAPTURE");
@@ -80,6 +86,18 @@ export function simulateBiome(
     const heatStored = getHeatStoredWatts(actions);
 
     // update thermal
+    // If throttling requested, recompute compute load with reduced utilization
+    function getThrottleTargetUtilization(actions: ControlAction[]): number | undefined {
+      const act = actions.find((a) => a.type === "THROTTLE_COMPUTE");
+      return act?.type === "THROTTLE_COMPUTE" ? act.targetUtilizationPct : undefined;
+    }
+
+    const throttleTarget = getThrottleTargetUtilization(actions);
+    const compute =
+      throttleTarget != null
+        ? { ...calculateComputeLoad({ ...input.profile.compute, utilizationPct: throttleTarget }), throttlingRequired: true }
+        : initialCompute;
+
     const { thermal, thermalReservoir: newThermalReservoir } = updateThermalState({
       previousThermalReservoir: thermalReservoir,
       thermalBounds: input.profile.thermalBounds,
@@ -251,6 +269,8 @@ function buildSimulationResult(input: {
     plantStressHours,
     waterDeficitHours,
     heatSurplusHours,
-    stabilityScore: 0 as unknown as number,
+    stabilityScore: 0 as never,
+    totalHeatRejectedKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatRejectedWatts ?? 0), 0) / 1000,
+    totalHeatStoredKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatStoredWatts ?? 0), 0) / 1000,
   };
 }

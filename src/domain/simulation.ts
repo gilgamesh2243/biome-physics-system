@@ -23,6 +23,7 @@ export interface BiomeProfile {
 
   waterCaptureLitersPerHour: Liters;
   passiveCondensationLitersPerHour: Liters;
+  thermalControl: ThermalControlCapacity;
 }
 
 export interface BiomeSimulationInput {
@@ -59,4 +60,13 @@ export interface BiomeSimulationResult {
   heatSurplusHours: number;
 
   stabilityScore: number;
+  totalHeatRejectedKwh?: number;
+  totalHeatStoredKwh?: number;
+}
+
+export interface ThermalControlCapacity {
+  maxHeatRejectionWatts: number;
+  maxHeatStorageWatts: number;
+  maxVentilationM3PerHour: number;
+  emergencyHeatRejectionWatts?: number;
 }

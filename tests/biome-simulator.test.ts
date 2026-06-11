@@ -24,4 +24,13 @@ describe("biome-simulator", () => {
     const problem = result.waterDeficitHours > 0 || result.heatSurplusHours > 0 || result.plantStressHours > 0 || result.stabilityScore < 100;
     expect(problem).toBeTruthy();
   });
+
+  it("throttling reduces compute heat and heat rejected is recorded", () => {
+    const overloadedBiome = { ...smallExperimentalBiome, compute: { activeMachines: 60, wattsPerMachine: 220, utilizationPct: 90, coolingOverheadPct: 45 }, waterCaptureLitersPerHour: 1, thermalControl: { maxHeatRejectionWatts: 8000, maxHeatStorageWatts: 2000, maxVentilationM3PerHour: 300, emergencyHeatRejectionWatts: 10000 } } as any;
+    const result = simulateBiome({ profile: overloadedBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 24 * 3 });
+    // heat rejected should be recorded
+    expect((result.totalHeatRejectedKwh ?? 0)).toBeGreaterThan(0);
+    // stability should not be perfect
+    expect(result.stabilityScore).toBeLessThan(100);
+  });
 });

@@ -49,6 +49,12 @@ export const smallExperimentalBiome: BiomeProfile = {
 
   waterCaptureLitersPerHour: 2,
   passiveCondensationLitersPerHour: 0.1,
+  thermalControl: {
+    maxHeatRejectionWatts: 2500,
+    maxHeatStorageWatts: 750,
+    maxVentilationM3PerHour: 300,
+    emergencyHeatRejectionWatts: 4000,
+  },
 };
 
 export const computeGreenhouseBiome: BiomeProfile = {
@@ -100,4 +106,10 @@ export const computeGreenhouseBiome: BiomeProfile = {
 
   waterCaptureLitersPerHour: 8,
   passiveCondensationLitersPerHour: 0.5,
+  thermalControl: {
+    maxHeatRejectionWatts: 7000,
+    maxHeatStorageWatts: 2500,
+    maxVentilationM3PerHour: 1800,
+    emergencyHeatRejectionWatts: 12000,
+  },
 };

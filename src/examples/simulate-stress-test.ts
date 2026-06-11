@@ -14,6 +14,12 @@ const overloadedBiome = {
     coolingOverheadPct: 45,
   },
   waterCaptureLitersPerHour: 4,
+  thermalControl: {
+    maxHeatRejectionWatts: 8000,
+    maxHeatStorageWatts: 2000,
+    maxVentilationM3PerHour: 1800,
+    emergencyHeatRejectionWatts: 10000,
+  },
 };
 
 const result = simulateBiome({
@@ -38,4 +44,7 @@ console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
 console.log(`Plant stress hours: ${result.plantStressHours}`);
 console.log(`Water deficit hours: ${result.waterDeficitHours}`);
 console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+console.log("");
+console.log(`Heat rejected kWh: ${formatNumber(result.totalHeatRejectedKwh, 2)}`);
+console.log(`Heat stored kWh: ${formatNumber(result.totalHeatStoredKwh, 2)}`);
 console.log("");

@@ -26,4 +26,6 @@ console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
 console.log(`Plant stress hours: ${result.plantStressHours}`);
 console.log(`Water deficit hours: ${result.waterDeficitHours}`);
 console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+console.log(`Heat rejected kWh: ${formatNumber(result.totalHeatRejectedKwh, 2)}`);
+console.log(`Heat stored kWh: ${formatNumber(result.totalHeatStoredKwh, 2)}`);
 console.log("");

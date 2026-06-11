@@ -20,7 +20,7 @@ console.log("Biome: Compute greenhouse biome");
 console.log("Climate: Arizona dry day");
 console.log("");
 console.log(
-  "Policy                         Score  Final Water L  Temp Max C  RH Min %  Compute Uptime  Plant Stress  Water Deficit  Heat Surplus"
+  "Policy                         Score  Final Water L  Temp Max C  RH Min %  Compute Uptime  Plant Stress  Water Deficit  Heat Surplus  Heat Rejected kWh  Heat Stored kWh"
 );
 console.log(
   "-----------------------------------------------------------------------------------------------------------------------------"
@@ -45,6 +45,8 @@ for (const policy of policies) {
       String(result.plantStressHours).padStart(13),
       String(result.waterDeficitHours).padStart(14),
       String(result.heatSurplusHours).padStart(13),
+      formatNumber(result.totalHeatRejectedKwh, 2).padStart(18),
+      formatNumber(result.totalHeatStoredKwh, 2).padStart(16),
     ].join("  ")
   );
 }
