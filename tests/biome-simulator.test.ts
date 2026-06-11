@@ -17,4 +17,11 @@ describe("biome-simulator", () => {
   it("throws on invalid hours", () => {
     expect(() => simulateBiome({ profile: smallExperimentalBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 0 })).toThrow();
   });
+
+  it("overloaded profile produces at least one limiting condition", () => {
+    const overloadedBiome = { ...smallExperimentalBiome, compute: { activeMachines: 60, wattsPerMachine: 220, utilizationPct: 90, coolingOverheadPct: 45 }, waterCaptureLitersPerHour: 1 } as any;
+    const result = simulateBiome({ profile: overloadedBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 24 * 3 });
+    const problem = result.waterDeficitHours > 0 || result.heatSurplusHours > 0 || result.plantStressHours > 0 || result.stabilityScore < 100;
+    expect(problem).toBeTruthy();
+  });
 });

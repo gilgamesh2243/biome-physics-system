@@ -52,13 +52,32 @@ export function simulateBiome(
 
     const actions = chooseControlActions({ air, water, compute, policy: input.controlPolicy });
 
-    const captureIntensity = actions.find((a) => a.type === "RUN_WATER_CAPTURE") ? input.profile.waterCaptureLitersPerHour : 0;
+    function getRunWaterCaptureIntensity(actions: ControlAction[]): number {
+      const action = actions.find((a) => a.type === "RUN_WATER_CAPTURE");
+      return action?.type === "RUN_WATER_CAPTURE" ? action.intensityPct : 0;
+    }
 
-    const ventAirflow = actions.find((a) => a.type === "VENT_AIR") ? (actions.find((a) => a.type === "VENT_AIR") as any).airflowM3PerHour : 0;
+    function getVentAirflow(actions: ControlAction[]): number {
+      const action = actions.find((a) => a.type === "VENT_AIR");
+      return action?.type === "VENT_AIR" ? action.airflowM3PerHour : 0;
+    }
 
-    const heatRejected = actions.filter((a) => a.type === "REJECT_HEAT").reduce((s, a) => s + (a.type === "REJECT_HEAT" ? a.watts : 0), 0);
+    function getHeatRejectedWatts(actions: ControlAction[]): number {
+      return actions.reduce((sum, action) => (action.type === "REJECT_HEAT" ? sum + action.watts : sum), 0);
+    }
 
-    const heatStored = actions.filter((a) => a.type === "STORE_HEAT").reduce((s, a) => s + (a.type === "STORE_HEAT" ? a.watts : 0), 0);
+    function getHeatStoredWatts(actions: ControlAction[]): number {
+      return actions.reduce((sum, action) => (action.type === "STORE_HEAT" ? sum + action.watts : sum), 0);
+    }
+
+    const captureIntensityPct = getRunWaterCaptureIntensity(actions);
+    const captured = input.profile.waterCaptureLitersPerHour * (captureIntensityPct / 100);
+
+    const ventAirflow = getVentAirflow(actions);
+
+    const heatRejected = getHeatRejectedWatts(actions);
+
+    const heatStored = getHeatStoredWatts(actions);
 
     // update thermal
     const { thermal, thermalReservoir: newThermalReservoir } = updateThermalState({
@@ -71,13 +90,13 @@ export function simulateBiome(
       heatRejectedWatts: heatRejected,
       heatStoredWatts: heatStored,
       airVolumeM3: input.profile.airVolumeM3,
+      climateTemperatureC: climate.temperatureC,
+      ambientExchangeCoefficientWattsPerC: 75,
     });
 
     thermalReservoir = newThermalReservoir;
 
     // update water reservoir
-    const captured = captureIntensity;
-
     const updatedWater = updateWaterReservoir({
       previous: water,
       capturedLiters: captured,
@@ -95,8 +114,9 @@ export function simulateBiome(
       climate,
       ventAirflowM3PerHour: ventAirflow,
       transpirationLitersPerHour: biomass.transpirationLitersPerHour,
-      waterCaptureEfficiencyPct: captureIntensity > 0 ? 50 : 0,
+      waterCapturedLiters: captured,
       airVolumeM3: input.profile.airVolumeM3,
+      nextTemperatureC: thermal.airTemperatureC,
     });
 
     air = nextAir;

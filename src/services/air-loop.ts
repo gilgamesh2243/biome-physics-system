@@ -6,33 +6,43 @@ export function updateAirState(input: {
   climate: ExternalClimateCondition;
   ventAirflowM3PerHour: number;
   transpirationLitersPerHour: number;
-  waterCaptureEfficiencyPct: number;
+  waterCapturedLiters: number;
   airVolumeM3: number;
+  nextTemperatureC: number;
 }): AirState {
-  // ventilation mixes external air proportional to vent/volume
-  const externalPull = Math.max(0, Math.min(1, input.ventAirflowM3PerHour / Math.max(1, input.airVolumeM3)));
+  const externalPull = Math.max(
+    0,
+    Math.min(1, input.ventAirflowM3PerHour / Math.max(1, input.airVolumeM3))
+  );
 
-  const externalTemp = input.climate.temperatureC;
-  const externalRh = input.climate.relativeHumidityPct;
+  const externalAbs = calculateAbsoluteHumidityGm3({
+    temperatureC: input.climate.temperatureC,
+    relativeHumidityPct: input.climate.relativeHumidityPct,
+  });
 
-  const mixedTemp = input.previous.temperatureC * (1 - externalPull) + externalTemp * externalPull;
+  const mixedAbs =
+    input.previous.absoluteHumidityGm3 * (1 - externalPull) + externalAbs * externalPull;
 
-  // transpiration adds moisture; approximate: 1 liter water = 1000 g; distributed into air volume (gm3)
-  const transpirationG = input.transpirationLitersPerHour * 1000 / Math.max(0.0001, input.airVolumeM3);
+  const transpirationAddedGm3 =
+    (input.transpirationLitersPerHour * 1000) / Math.max(1, input.airVolumeM3);
 
-  // water capture removes a small fraction of moisture from air proportional to efficiency
-  const captureRemovalG = (input.waterCaptureEfficiencyPct / 100) * transpirationG * 0.5;
+  const captureRemovedGm3 =
+    (input.waterCapturedLiters * 1000) / Math.max(1, input.airVolumeM3);
 
-  const prevAbs = input.previous.absoluteHumidityGm3;
+  const nextAbs = Math.max(0, mixedAbs + transpirationAddedGm3 - captureRemovedGm3);
 
-  const nextAbs = Math.max(0, prevAbs * (1 - externalPull) + (externalRh ? calculateAbsoluteHumidityGm3({ temperatureC: externalTemp, relativeHumidityPct: externalRh }) * externalPull : prevAbs) + transpirationG - captureRemovalG);
+  const saturationAbs = calculateAbsoluteHumidityGm3({
+    temperatureC: input.nextTemperatureC,
+    relativeHumidityPct: 100,
+  });
 
-  // compute RH from absolute humidity approximation by invert via psychrometrics? We'll approximate by scaling
-  const approxRh = clampPercent((nextAbs / Math.max(0.1, calculateAbsoluteHumidityGm3({ temperatureC: mixedTemp, relativeHumidityPct: 100 }))) * 100);
+  const relativeHumidityPct = clampPercent(
+    saturationAbs > 0 ? (nextAbs / saturationAbs) * 100 : 0
+  );
 
   return {
-    temperatureC: mixedTemp,
-    relativeHumidityPct: approxRh,
+    temperatureC: input.nextTemperatureC,
+    relativeHumidityPct,
     absoluteHumidityGm3: nextAbs,
     airVolumeM3: input.previous.airVolumeM3,
     airExchangeM3PerHour: input.ventAirflowM3PerHour,
