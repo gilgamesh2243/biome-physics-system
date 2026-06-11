@@ -162,7 +162,13 @@ export function simulateBiome(
     records.push({ hourIndex, climateHour: climate.hour, state, actions });
   }
 
-  const resultBase = buildSimulationResult({ profileName: input.profile.name, policyName: input.controlPolicy.name, records });
+  const resultBase = buildSimulationResult({
+    profileName: input.profile.name,
+    policyName: input.controlPolicy.name,
+    records,
+    policy: input.controlPolicy,
+    waterCapacityLiters: input.profile.initialWater.capacityLiters,
+  });
 
   const stabilityScore = calculateStabilityScore(resultBase as any);
 
@@ -221,6 +227,8 @@ function buildSimulationResult(input: {
   profileName: string;
   policyName: string;
   records: BiomeHourlyRecord[];
+  policy: BiomeSimulationInput["controlPolicy"];
+  waterCapacityLiters: number;
 }) {
   const records = input.records;
 
@@ -253,6 +261,32 @@ function buildSimulationResult(input: {
   const throttledHours = records.filter((r) => r.state.warnings.includes("COMPUTE_THROTTLED")).length;
 
   const computeUptimePct = ((records.length - throttledHours) / Math.max(1, records.length)) * 100;
+  const waterStorageValues = records.map((r) => r.state.water.storedLiters);
+  const waterStorageMinLiters = Math.min(...waterStorageValues);
+  const waterStorageMinPct = input.waterCapacityLiters > 0 ? (waterStorageMinLiters / input.waterCapacityLiters) * 100 : 0;
+
+  const humidityWarningHours = records.filter(
+    (r) => r.state.warnings.includes("LOW_HUMIDITY") || r.state.warnings.includes("HIGH_HUMIDITY")
+  ).length;
+
+  const temperatureWarningHours = records.filter(
+    (r) => r.state.warnings.includes("LOW_TEMPERATURE") || r.state.warnings.includes("HIGH_TEMPERATURE")
+  ).length;
+
+  const maxTemperatureOvershootC = Math.max(
+    0,
+    ...records.map((r) => r.state.air.temperatureC - input.policy.maxTemperatureC)
+  );
+
+  const minHumidityUndershootPct = Math.max(
+    0,
+    ...records.map((r) => input.policy.minRelativeHumidityPct - r.state.air.relativeHumidityPct)
+  );
+
+  const maxHumidityOvershootPct = Math.max(
+    0,
+    ...records.map((r) => r.state.air.relativeHumidityPct - input.policy.maxRelativeHumidityPct)
+  );
 
   return {
     profileName: input.profileName,
@@ -272,5 +306,12 @@ function buildSimulationResult(input: {
     stabilityScore: 0 as never,
     totalHeatRejectedKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatRejectedWatts ?? 0), 0) / 1000,
     totalHeatStoredKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatStoredWatts ?? 0), 0) / 1000,
+    waterStorageMinLiters,
+    waterStorageMinPct,
+    maxTemperatureOvershootC,
+    minHumidityUndershootPct,
+    maxHumidityOvershootPct,
+    humidityWarningHours,
+    temperatureWarningHours,
   };
 }

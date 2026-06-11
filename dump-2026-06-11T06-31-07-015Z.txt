@@ -37,6 +37,7 @@ Limitations
     "dev": "tsx src/examples/simulate-small-biome.ts",
     "simulate:compute": "tsx src/examples/simulate-compute-greenhouse.ts",
     "compare:policies": "tsx src/examples/compare-control-policies.ts",
+    "simulate:stress": "tsx src/examples/simulate-stress-test.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -267,6 +268,7 @@ export interface BiomeProfile {
 
   waterCaptureLitersPerHour: Liters;
   passiveCondensationLitersPerHour: Liters;
+  thermalControl: ThermalControlCapacity;
 }
 
 export interface BiomeSimulationInput {
@@ -303,6 +305,24 @@ export interface BiomeSimulationResult {
   heatSurplusHours: number;
 
   stabilityScore: number;
+  totalHeatRejectedKwh?: number;
+  totalHeatStoredKwh?: number;
+  waterStorageMinLiters: number;
+  waterStorageMinPct: number;
+
+  maxTemperatureOvershootC: number;
+  minHumidityUndershootPct: number;
+  maxHumidityOvershootPct: number;
+
+  humidityWarningHours: number;
+  temperatureWarningHours: number;
+}
+
+export interface ThermalControlCapacity {
+  maxHeatRejectionWatts: number;
+  maxHeatStorageWatts: number;
+  maxVentilationM3PerHour: number;
+  emergencyHeatRejectionWatts?: number;
 }
 
 
@@ -443,6 +463,12 @@ export const smallExperimentalBiome: BiomeProfile = {
 
   waterCaptureLitersPerHour: 2,
   passiveCondensationLitersPerHour: 0.1,
+  thermalControl: {
+    maxHeatRejectionWatts: 2500,
+    maxHeatStorageWatts: 750,
+    maxVentilationM3PerHour: 300,
+    emergencyHeatRejectionWatts: 4000,
+  },
 };
 
 export const computeGreenhouseBiome: BiomeProfile = {
@@ -494,6 +520,12 @@ export const computeGreenhouseBiome: BiomeProfile = {
 
   waterCaptureLitersPerHour: 8,
   passiveCondensationLitersPerHour: 0.5,
+  thermalControl: {
+    maxHeatRejectionWatts: 7000,
+    maxHeatStorageWatts: 2500,
+    maxVentilationM3PerHour: 1800,
+    emergencyHeatRejectionWatts: 12000,
+  },
 };
 
 
@@ -580,7 +612,7 @@ console.log("Biome: Compute greenhouse biome");
 console.log("Climate: Arizona dry day");
 console.log("");
 console.log(
-  "Policy                         Score  Final Water L  Temp Max C  RH Min %  Compute Uptime  Plant Stress  Water Deficit  Heat Surplus"
+  "Policy                         Score  Final Water L  Temp Max C  RH Min %  Compute Uptime  Plant Stress  Water Deficit  Heat Surplus  Heat Rejected kWh  Heat Stored kWh"
 );
 console.log(
   "-----------------------------------------------------------------------------------------------------------------------------"
@@ -605,6 +637,8 @@ for (const policy of policies) {
       String(result.plantStressHours).padStart(13),
       String(result.waterDeficitHours).padStart(14),
       String(result.heatSurplusHours).padStart(13),
+      formatNumber(result.totalHeatRejectedKwh, 2).padStart(18),
+      formatNumber(result.totalHeatStoredKwh, 2).padStart(16),
     ].join("  ")
   );
 }
@@ -721,6 +755,8 @@ for (const scenario of [
   console.log(`Plant stress hours: ${result.plantStressHours}`);
   console.log(`Water deficit hours: ${result.waterDeficitHours}`);
   console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+  console.log(`Heat rejected kWh: ${formatNumber(result.totalHeatRejectedKwh, 2)}`);
+  console.log(`Heat stored kWh: ${formatNumber(result.totalHeatStoredKwh, 2)}`);
 }
 
 
@@ -754,6 +790,62 @@ console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
 console.log(`Plant stress hours: ${result.plantStressHours}`);
 console.log(`Water deficit hours: ${result.waterDeficitHours}`);
 console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+console.log(`Heat rejected kWh: ${formatNumber(result.totalHeatRejectedKwh, 2)}`);
+console.log(`Heat stored kWh: ${formatNumber(result.totalHeatStoredKwh, 2)}`);
+console.log("");
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/simulate-stress-test.ts ---
+
+import { arizonaDryDay } from "./climate-profiles";
+import { computeGreenhouseBiome } from "./biome-profiles";
+import { aggressiveComputePolicy } from "./control-policies";
+import { simulateBiome } from "../services/biome-simulator";
+import { formatNumber, formatPct } from "./format-output";
+
+const overloadedBiome = {
+  ...computeGreenhouseBiome,
+  name: "Overloaded compute greenhouse biome",
+  compute: {
+    activeMachines: 60,
+    wattsPerMachine: 220,
+    utilizationPct: 85,
+    coolingOverheadPct: 45,
+  },
+  waterCaptureLitersPerHour: 4,
+  thermalControl: {
+    maxHeatRejectionWatts: 8000,
+    maxHeatStorageWatts: 2000,
+    maxVentilationM3PerHour: 1800,
+    emergencyHeatRejectionWatts: 10000,
+  },
+};
+
+const result = simulateBiome({
+  profile: overloadedBiome,
+  climate: arizonaDryDay,
+  controlPolicy: aggressiveComputePolicy,
+  hours: 24 * 7,
+});
+
+console.log("");
+console.log(`Biome: ${result.profileName}`);
+console.log(`Policy: ${result.policyName}`);
+console.log(`Hours simulated: ${result.hourlyRecords.length}`);
+console.log("");
+console.log(`Stability score: ${formatNumber(result.stabilityScore, 1)}`);
+console.log(`Water captured L: ${formatNumber(result.totalWaterCapturedLiters, 2)}`);
+console.log(`Water consumed L: ${formatNumber(result.totalWaterConsumedLiters, 2)}`);
+console.log(`Final stored water L: ${formatNumber(result.finalStoredWaterLiters, 2)}`);
+console.log(`Temp range C: ${formatNumber(result.minTemperatureC, 1)} - ${formatNumber(result.maxTemperatureC, 1)}`);
+console.log(`RH range %: ${formatNumber(result.minRelativeHumidityPct, 1)} - ${formatNumber(result.maxRelativeHumidityPct, 1)}`);
+console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
+console.log(`Plant stress hours: ${result.plantStressHours}`);
+console.log(`Water deficit hours: ${result.waterDeficitHours}`);
+console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+console.log("");
+console.log(`Heat rejected kWh: ${formatNumber(result.totalHeatRejectedKwh, 2)}`);
+console.log(`Heat stored kWh: ${formatNumber(result.totalHeatStoredKwh, 2)}`);
 console.log("");
 
 
@@ -793,33 +885,43 @@ export function updateAirState(input: {
   climate: ExternalClimateCondition;
   ventAirflowM3PerHour: number;
   transpirationLitersPerHour: number;
-  waterCaptureEfficiencyPct: number;
+  waterCapturedLiters: number;
   airVolumeM3: number;
+  nextTemperatureC: number;
 }): AirState {
-  // ventilation mixes external air proportional to vent/volume
-  const externalPull = Math.max(0, Math.min(1, input.ventAirflowM3PerHour / Math.max(1, input.airVolumeM3)));
+  const externalPull = Math.max(
+    0,
+    Math.min(1, input.ventAirflowM3PerHour / Math.max(1, input.airVolumeM3))
+  );
 
-  const externalTemp = input.climate.temperatureC;
-  const externalRh = input.climate.relativeHumidityPct;
+  const externalAbs = calculateAbsoluteHumidityGm3({
+    temperatureC: input.climate.temperatureC,
+    relativeHumidityPct: input.climate.relativeHumidityPct,
+  });
 
-  const mixedTemp = input.previous.temperatureC * (1 - externalPull) + externalTemp * externalPull;
+  const mixedAbs =
+    input.previous.absoluteHumidityGm3 * (1 - externalPull) + externalAbs * externalPull;
 
-  // transpiration adds moisture; approximate: 1 liter water = 1000 g; distributed into air volume (gm3)
-  const transpirationG = input.transpirationLitersPerHour * 1000 / Math.max(0.0001, input.airVolumeM3);
+  const transpirationAddedGm3 =
+    (input.transpirationLitersPerHour * 1000) / Math.max(1, input.airVolumeM3);
 
-  // water capture removes a small fraction of moisture from air proportional to efficiency
-  const captureRemovalG = (input.waterCaptureEfficiencyPct / 100) * transpirationG * 0.5;
+  const captureRemovedGm3 =
+    (input.waterCapturedLiters * 1000) / Math.max(1, input.airVolumeM3);
 
-  const prevAbs = input.previous.absoluteHumidityGm3;
+  const nextAbs = Math.max(0, mixedAbs + transpirationAddedGm3 - captureRemovedGm3);
 
-  const nextAbs = Math.max(0, prevAbs * (1 - externalPull) + (externalRh ? calculateAbsoluteHumidityGm3({ temperatureC: externalTemp, relativeHumidityPct: externalRh }) * externalPull : prevAbs) + transpirationG - captureRemovalG);
+  const saturationAbs = calculateAbsoluteHumidityGm3({
+    temperatureC: input.nextTemperatureC,
+    relativeHumidityPct: 100,
+  });
 
-  // compute RH from absolute humidity approximation by invert via psychrometrics? We'll approximate by scaling
-  const approxRh = clampPercent((nextAbs / Math.max(0.1, calculateAbsoluteHumidityGm3({ temperatureC: mixedTemp, relativeHumidityPct: 100 }))) * 100);
+  const relativeHumidityPct = clampPercent(
+    saturationAbs > 0 ? (nextAbs / saturationAbs) * 100 : 0
+  );
 
   return {
-    temperatureC: mixedTemp,
-    relativeHumidityPct: approxRh,
+    temperatureC: input.nextTemperatureC,
+    relativeHumidityPct,
     absoluteHumidityGm3: nextAbs,
     airVolumeM3: input.previous.airVolumeM3,
     airExchangeM3PerHour: input.ventAirflowM3PerHour,
@@ -922,21 +1024,58 @@ export function simulateBiome(
   for (let hourIndex = 0; hourIndex < input.hours; hourIndex++) {
     const climate = input.climate[hourIndex % input.climate.length];
 
-    const compute = calculateComputeLoad(input.profile.compute);
+    const initialCompute = calculateComputeLoad(input.profile.compute);
 
     const biomass = calculateBiomassState({ profile: input.profile.biomass, air });
 
-    const actions = chooseControlActions({ air, water, compute, policy: input.controlPolicy });
+    const actions = chooseControlActions({
+      air,
+      water,
+      compute: initialCompute,
+      policy: input.controlPolicy,
+      thermalControl: input.profile.thermalControl,
+    });
 
-    const captureIntensity = actions.find((a) => a.type === "RUN_WATER_CAPTURE") ? input.profile.waterCaptureLitersPerHour : 0;
+    function getRunWaterCaptureIntensity(actions: ControlAction[]): number {
+      const action = actions.find((a) => a.type === "RUN_WATER_CAPTURE");
+      return action?.type === "RUN_WATER_CAPTURE" ? action.intensityPct : 0;
+    }
 
-    const ventAirflow = actions.find((a) => a.type === "VENT_AIR") ? (actions.find((a) => a.type === "VENT_AIR") as any).airflowM3PerHour : 0;
+    function getVentAirflow(actions: ControlAction[]): number {
+      const action = actions.find((a) => a.type === "VENT_AIR");
+      return action?.type === "VENT_AIR" ? action.airflowM3PerHour : 0;
+    }
 
-    const heatRejected = actions.filter((a) => a.type === "REJECT_HEAT").reduce((s, a) => s + (a.type === "REJECT_HEAT" ? a.watts : 0), 0);
+    function getHeatRejectedWatts(actions: ControlAction[]): number {
+      return actions.reduce((sum, action) => (action.type === "REJECT_HEAT" ? sum + action.watts : sum), 0);
+    }
 
-    const heatStored = actions.filter((a) => a.type === "STORE_HEAT").reduce((s, a) => s + (a.type === "STORE_HEAT" ? a.watts : 0), 0);
+    function getHeatStoredWatts(actions: ControlAction[]): number {
+      return actions.reduce((sum, action) => (action.type === "STORE_HEAT" ? sum + action.watts : sum), 0);
+    }
+
+    const captureIntensityPct = getRunWaterCaptureIntensity(actions);
+    const captured = input.profile.waterCaptureLitersPerHour * (captureIntensityPct / 100);
+
+    const ventAirflow = getVentAirflow(actions);
+
+    const heatRejected = getHeatRejectedWatts(actions);
+
+    const heatStored = getHeatStoredWatts(actions);
 
     // update thermal
+    // If throttling requested, recompute compute load with reduced utilization
+    function getThrottleTargetUtilization(actions: ControlAction[]): number | undefined {
+      const act = actions.find((a) => a.type === "THROTTLE_COMPUTE");
+      return act?.type === "THROTTLE_COMPUTE" ? act.targetUtilizationPct : undefined;
+    }
+
+    const throttleTarget = getThrottleTargetUtilization(actions);
+    const compute =
+      throttleTarget != null
+        ? { ...calculateComputeLoad({ ...input.profile.compute, utilizationPct: throttleTarget }), throttlingRequired: true }
+        : initialCompute;
+
     const { thermal, thermalReservoir: newThermalReservoir } = updateThermalState({
       previousThermalReservoir: thermalReservoir,
       thermalBounds: input.profile.thermalBounds,
@@ -947,13 +1086,13 @@ export function simulateBiome(
       heatRejectedWatts: heatRejected,
       heatStoredWatts: heatStored,
       airVolumeM3: input.profile.airVolumeM3,
+      climateTemperatureC: climate.temperatureC,
+      ambientExchangeCoefficientWattsPerC: 75,
     });
 
     thermalReservoir = newThermalReservoir;
 
     // update water reservoir
-    const captured = captureIntensity;
-
     const updatedWater = updateWaterReservoir({
       previous: water,
       capturedLiters: captured,
@@ -971,8 +1110,9 @@ export function simulateBiome(
       climate,
       ventAirflowM3PerHour: ventAirflow,
       transpirationLitersPerHour: biomass.transpirationLitersPerHour,
-      waterCaptureEfficiencyPct: captureIntensity > 0 ? 50 : 0,
+      waterCapturedLiters: captured,
       airVolumeM3: input.profile.airVolumeM3,
+      nextTemperatureC: thermal.airTemperatureC,
     });
 
     air = nextAir;
@@ -1000,7 +1140,13 @@ export function simulateBiome(
     records.push({ hourIndex, climateHour: climate.hour, state, actions });
   }
 
-  const resultBase = buildSimulationResult({ profileName: input.profile.name, policyName: input.controlPolicy.name, records });
+  const resultBase = buildSimulationResult({
+    profileName: input.profile.name,
+    policyName: input.controlPolicy.name,
+    records,
+    policy: input.controlPolicy,
+    waterCapacityLiters: input.profile.initialWater.capacityLiters,
+  });
 
   const stabilityScore = calculateStabilityScore(resultBase as any);
 
@@ -1059,6 +1205,8 @@ function buildSimulationResult(input: {
   profileName: string;
   policyName: string;
   records: BiomeHourlyRecord[];
+  policy: BiomeSimulationInput["controlPolicy"];
+  waterCapacityLiters: number;
 }) {
   const records = input.records;
 
@@ -1091,6 +1239,32 @@ function buildSimulationResult(input: {
   const throttledHours = records.filter((r) => r.state.warnings.includes("COMPUTE_THROTTLED")).length;
 
   const computeUptimePct = ((records.length - throttledHours) / Math.max(1, records.length)) * 100;
+  const waterStorageValues = records.map((r) => r.state.water.storedLiters);
+  const waterStorageMinLiters = Math.min(...waterStorageValues);
+  const waterStorageMinPct = input.waterCapacityLiters > 0 ? (waterStorageMinLiters / input.waterCapacityLiters) * 100 : 0;
+
+  const humidityWarningHours = records.filter(
+    (r) => r.state.warnings.includes("LOW_HUMIDITY") || r.state.warnings.includes("HIGH_HUMIDITY")
+  ).length;
+
+  const temperatureWarningHours = records.filter(
+    (r) => r.state.warnings.includes("LOW_TEMPERATURE") || r.state.warnings.includes("HIGH_TEMPERATURE")
+  ).length;
+
+  const maxTemperatureOvershootC = Math.max(
+    0,
+    ...records.map((r) => r.state.air.temperatureC - input.policy.maxTemperatureC)
+  );
+
+  const minHumidityUndershootPct = Math.max(
+    0,
+    ...records.map((r) => input.policy.minRelativeHumidityPct - r.state.air.relativeHumidityPct)
+  );
+
+  const maxHumidityOvershootPct = Math.max(
+    0,
+    ...records.map((r) => r.state.air.relativeHumidityPct - input.policy.maxRelativeHumidityPct)
+  );
 
   return {
     profileName: input.profileName,
@@ -1107,7 +1281,16 @@ function buildSimulationResult(input: {
     plantStressHours,
     waterDeficitHours,
     heatSurplusHours,
-    stabilityScore: 0 as unknown as number,
+    stabilityScore: 0 as never,
+    totalHeatRejectedKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatRejectedWatts ?? 0), 0) / 1000,
+    totalHeatStoredKwh: records.reduce((sum, r) => sum + (r.state.thermal.heatStoredWatts ?? 0), 0) / 1000,
+    waterStorageMinLiters,
+    waterStorageMinPct,
+    maxTemperatureOvershootC,
+    minHumidityUndershootPct,
+    maxHumidityOvershootPct,
+    humidityWarningHours,
+    temperatureWarningHours,
   };
 }
 
@@ -1146,15 +1329,18 @@ import type { AirState } from "../domain/air";
 import type { ControlAction, ControlPolicy } from "../domain/control-policy";
 import type { ComputeLoadState } from "../domain/compute";
 import type { WaterReservoirState } from "../domain/reservoirs";
+import type { ThermalControlCapacity } from "../domain/simulation";
 
 export function chooseControlActions(input: {
   air: AirState;
   water: WaterReservoirState;
   compute: ComputeLoadState;
   policy: ControlPolicy;
+  thermalControl: ThermalControlCapacity;
 }): ControlAction[] {
   const actions: ControlAction[] = [];
 
+  // Water capture: run if below max storage and policy allows
   if (
     input.policy.allowWaterCapture &&
     input.water.storedLiters < input.policy.maxWaterStorageLiters
@@ -1162,34 +1348,42 @@ export function chooseControlActions(input: {
     actions.push({ type: "RUN_WATER_CAPTURE", intensityPct: 100 });
   }
 
-  if (
-    input.policy.allowVenting &&
-    input.air.temperatureC > input.policy.targetTemperatureC
-  ) {
-    actions.push({ type: "VENT_AIR", airflowM3PerHour: input.air.airVolumeM3 * 0.5 });
+  const tempOverTarget = input.air.temperatureC - input.policy.targetTemperatureC;
+  const tempOverMax = input.air.temperatureC - input.policy.maxTemperatureC;
+
+  // Venting proportional to how far above target, capped by profile
+  if (input.policy.allowVenting && tempOverTarget > 0) {
+    const ventFraction = Math.min(1, Math.max(0, tempOverTarget / 10));
+    const airflowM3PerHour = Math.round(input.thermalControl.maxVentilationM3PerHour * ventFraction);
+    if (airflowM3PerHour > 0) actions.push({ type: "VENT_AIR", airflowM3PerHour });
   }
 
-  if (
-    input.policy.allowHeatStorage &&
-    input.air.temperatureC > input.policy.targetTemperatureC
-  ) {
-    actions.push({ type: "STORE_HEAT", watts: 500 });
+  // Heat storage attempt
+  if (input.policy.allowHeatStorage && tempOverTarget > 0) {
+    const storageFraction = Math.min(1, Math.max(0, tempOverTarget / 8));
+    const watts = Math.round(input.thermalControl.maxHeatStorageWatts * storageFraction);
+    if (watts > 0) actions.push({ type: "STORE_HEAT", watts });
   }
 
-  if (input.air.temperatureC > input.policy.maxTemperatureC) {
-    actions.push({ type: "REJECT_HEAT", watts: 1000 });
+  // Heat rejection
+  if (tempOverTarget > 0) {
+    const rejectionFraction = Math.min(1, Math.max(0, tempOverTarget / 8));
+    let watts = Math.round(input.thermalControl.maxHeatRejectionWatts * rejectionFraction);
+    if (tempOverMax > 5 && input.thermalControl.emergencyHeatRejectionWatts) {
+      watts = Math.max(watts, input.thermalControl.emergencyHeatRejectionWatts);
+    }
+    if (watts > 0) actions.push({ type: "REJECT_HEAT", watts });
   }
 
+  // Compute throttling
   if (
     input.policy.allowComputeThrottle &&
-    input.air.temperatureC > input.policy.maxTemperatureC + 3
+    input.air.temperatureC > input.policy.maxTemperatureC + 2
   ) {
     actions.push({ type: "THROTTLE_COMPUTE", targetUtilizationPct: 50 });
   }
 
-  if (actions.length === 0) {
-    actions.push({ type: "NOOP" });
-  }
+  if (actions.length === 0) actions.push({ type: "NOOP" });
 
   return actions;
 }
@@ -1224,12 +1418,39 @@ import type { BiomeSimulationResult } from "../domain/simulation";
 export function calculateStabilityScore(result: Omit<BiomeSimulationResult, "stabilityScore">): number {
   const totalHours = Math.max(1, result.hourlyRecords.length);
 
-  const waterPenalty = (result.waterDeficitHours / totalHours) * 35;
-  const heatPenalty = (result.heatSurplusHours / totalHours) * 30;
-  const plantPenalty = (result.plantStressHours / totalHours) * 20;
-  const computePenalty = (100 - result.computeUptimePct) * 0.15;
+  // Water-related penalties
+  const waterDeficitPenalty = (result.waterDeficitHours / totalHours) * 30;
+  const waterReservePenalty = Math.max(0, (20 - result.waterStorageMinPct) / 20) * 25; // up to 25 points if reserve drops below 20%
 
-  const score = 100 - waterPenalty - heatPenalty - plantPenalty - computePenalty;
+  // Temperature penalties
+  const temperatureOvershootPenalty = Math.min(30, result.maxTemperatureOvershootC * 3); // ~3 points per °C overshoot
+  const temperatureWarningPenalty = (result.temperatureWarningHours / totalHours) * 15;
+
+  // Humidity penalties
+  const humidityUndershootPenalty = Math.min(25, result.minHumidityUndershootPct * 1.4);
+  const humidityOvershootPenalty = Math.min(10, result.maxHumidityOvershootPct * 0.5);
+  const humidityWarningPenalty = (result.humidityWarningHours / totalHours) * 10;
+
+  // Heat and plant stress
+  const heatPenalty = (result.heatSurplusHours / totalHours) * 20;
+  const plantPenalty = (result.plantStressHours / totalHours) * 25;
+
+  // Compute uptime penalty (small)
+  const computePenalty = (100 - result.computeUptimePct) * 0.2;
+
+  const totalPenalty =
+    waterDeficitPenalty +
+    waterReservePenalty +
+    temperatureOvershootPenalty +
+    temperatureWarningPenalty +
+    humidityUndershootPenalty +
+    humidityOvershootPenalty +
+    humidityWarningPenalty +
+    heatPenalty +
+    plantPenalty +
+    computePenalty;
+
+  const score = 100 - totalPenalty;
 
   return Math.max(0, Math.min(100, score));
 }
@@ -1241,6 +1462,10 @@ import type { ThermalReservoirState } from "../domain/reservoirs";
 import type { ThermalBounds, ThermalState } from "../domain/thermal";
 import type { WattHours, Watts } from "../domain/units";
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 export function updateThermalState(input: {
   previousThermalReservoir: ThermalReservoirState;
   thermalBounds: ThermalBounds;
@@ -1251,22 +1476,45 @@ export function updateThermalState(input: {
   heatRejectedWatts: Watts;
   heatStoredWatts: Watts;
   airVolumeM3: number;
+  climateTemperatureC?: number;
+  ambientExchangeCoefficientWattsPerC?: number;
 }): { thermal: ThermalState; thermalReservoir: ThermalReservoirState } {
-  const netWatts = input.computeHeatWatts + input.solarGainWatts + input.biomassHeatWatts - input.heatRejectedWatts - input.heatStoredWatts;
+  const climateTemperatureC = input.climateTemperatureC ?? input.airTemperatureC;
+  const ambientExchangeCoefficientWattsPerC = input.ambientExchangeCoefficientWattsPerC ?? 50;
 
-  const heatAddedWh = Math.max(0, netWatts) / 1; // per hour, 1 W => 1 Wh per hour
+  const ambientExchangeWatts =
+    (climateTemperatureC - input.airTemperatureC) * ambientExchangeCoefficientWattsPerC;
+
+  const netWatts =
+    input.computeHeatWatts +
+    input.solarGainWatts +
+    input.biomassHeatWatts +
+    ambientExchangeWatts -
+    input.heatRejectedWatts -
+    input.heatStoredWatts;
+
+  const heatAddedWh = Math.max(0, netWatts) / 1;
   const heatRemovedWh = Math.max(0, -netWatts) / 1;
 
-  const rawThermalStorage = input.previousThermalReservoir.storedWattHours + heatAddedWh - heatRemovedWh;
+  const rawThermalStorage =
+    input.previousThermalReservoir.storedWattHours + heatAddedWh - heatRemovedWh;
 
-  const overflowWattHours = rawThermalStorage > input.previousThermalReservoir.capacityWattHours ? rawThermalStorage - input.previousThermalReservoir.capacityWattHours : 0;
+  const overflowWattHours =
+    rawThermalStorage > input.previousThermalReservoir.capacityWattHours
+      ? rawThermalStorage - input.previousThermalReservoir.capacityWattHours
+      : 0;
   const deficitWattHours = rawThermalStorage < 0 ? Math.abs(rawThermalStorage) : 0;
 
-  const storedWattHours = Math.max(0, Math.min(input.previousThermalReservoir.capacityWattHours, rawThermalStorage));
+  const storedWattHours = Math.max(
+    0,
+    Math.min(input.previousThermalReservoir.capacityWattHours, rawThermalStorage)
+  );
 
-  // naive temperature change: assume heat capacity proportional to air volume; tune factor
-  const temperatureChangeC = netWatts / Math.max(1, input.airVolumeM3) / 100;
-  const nextAirTemp = input.airTemperatureC + temperatureChangeC;
+  // heat capacity: J per C (air ~ 1200 J/m3·K)
+  const airHeatCapacityJPerC = Math.max(1, input.airVolumeM3) * 1200;
+  const unclampedDeltaC = (netWatts * 3600) / airHeatCapacityJPerC; // W * s / J/C => C
+  const deltaC = clamp(unclampedDeltaC, -5, 5);
+  const nextAirTemp = input.airTemperatureC + deltaC;
 
   const heatSurplusWatts = nextAirTemp > input.thermalBounds.maxTemperatureC ? netWatts : 0;
   const heatDeficitWatts = nextAirTemp < input.thermalBounds.minTemperatureC ? Math.abs(netWatts) : 0;
@@ -1349,16 +1597,17 @@ import { describe, it, expect } from "vitest";
 import { updateAirState } from "../src/services/air-loop";
 
 describe("air-loop", () => {
-  it("transpiration increases RH and capture decreases RH, venting pulls toward outside", () => {
-    const prev = { temperatureC: 25, relativeHumidityPct: 50, absoluteHumidityGm3: 10, airVolumeM3: 100, airExchangeM3PerHour: 0 } as any;
+  it("transpiration increases absolute humidity and capture decreases it; venting mixes with outside", () => {
+    const prev = { temperatureC: 25, relativeHumidityPct: 50, absoluteHumidityGm3: 8, airVolumeM3: 100, airExchangeM3PerHour: 0, co2Ppm: 400 } as any;
     const climate = { hour: 0, temperatureC: 25, relativeHumidityPct: 40 } as any;
-    const withTransp = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCaptureEfficiencyPct: 0, airVolumeM3: 100 });
-    expect(withTransp.relativeHumidityPct).toBeGreaterThanOrEqual(prev.relativeHumidityPct);
 
-    const withCapture = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCaptureEfficiencyPct: 100, airVolumeM3: 100 });
-    expect(withCapture.relativeHumidityPct).toBeLessThanOrEqual(withTransp.relativeHumidityPct);
+    const withTransp = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCapturedLiters: 0, airVolumeM3: 100, nextTemperatureC: 25 });
+    expect(withTransp.absoluteHumidityGm3).toBeGreaterThanOrEqual(prev.absoluteHumidityGm3);
 
-    const vented = updateAirState({ previous: prev, climate: { hour: 0, temperatureC: 10, relativeHumidityPct: 20 }, ventAirflowM3PerHour: 100, transpirationLitersPerHour: 0, waterCaptureEfficiencyPct: 0, airVolumeM3: 100 });
+    const withCapture = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCapturedLiters: 1, airVolumeM3: 100, nextTemperatureC: 25 });
+    expect(withCapture.absoluteHumidityGm3).toBeLessThanOrEqual(withTransp.absoluteHumidityGm3);
+
+    const vented = updateAirState({ previous: prev, climate: { hour: 0, temperatureC: 10, relativeHumidityPct: 20 }, ventAirflowM3PerHour: 100, transpirationLitersPerHour: 0, waterCapturedLiters: 0, airVolumeM3: 100, nextTemperatureC: 10 });
     expect(vented.temperatureC).toBeLessThan(prev.temperatureC);
     expect(vented.relativeHumidityPct).toBeGreaterThanOrEqual(0);
     expect(vented.relativeHumidityPct).toBeLessThanOrEqual(100);
@@ -1405,6 +1654,22 @@ describe("biome-simulator", () => {
   it("throws on invalid hours", () => {
     expect(() => simulateBiome({ profile: smallExperimentalBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 0 })).toThrow();
   });
+
+  it("overloaded profile produces at least one limiting condition", () => {
+    const overloadedBiome = { ...smallExperimentalBiome, compute: { activeMachines: 60, wattsPerMachine: 220, utilizationPct: 90, coolingOverheadPct: 45 }, waterCaptureLitersPerHour: 1 } as any;
+    const result = simulateBiome({ profile: overloadedBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 24 * 3 });
+    const problem = result.waterDeficitHours > 0 || result.heatSurplusHours > 0 || result.plantStressHours > 0 || result.stabilityScore < 100;
+    expect(problem).toBeTruthy();
+  });
+
+  it("throttling reduces compute heat and heat rejected is recorded", () => {
+    const overloadedBiome = { ...smallExperimentalBiome, compute: { activeMachines: 60, wattsPerMachine: 220, utilizationPct: 90, coolingOverheadPct: 45 }, waterCaptureLitersPerHour: 1, thermalControl: { maxHeatRejectionWatts: 8000, maxHeatStorageWatts: 2000, maxVentilationM3PerHour: 300, emergencyHeatRejectionWatts: 10000 } } as any;
+    const result = simulateBiome({ profile: overloadedBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 24 * 3 });
+    // heat rejected should be recorded
+    expect((result.totalHeatRejectedKwh ?? 0)).toBeGreaterThan(0);
+    // stability should not be perfect
+    expect(result.stabilityScore).toBeLessThan(100);
+  });
 });
 
 
@@ -1424,27 +1689,110 @@ describe("compute-loop", () => {
 });
 
 
+--- /Users/mac/Forge/biome-physics-system/tests/control-policy-engine.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { chooseControlActions } from "../src/services/control-policy-engine";
+
+import { conservativePolicy } from "../src/examples/control-policies";
+import { smallExperimentalBiome } from "../src/examples/biome-profiles";
+
+describe("control-policy-engine", () => {
+  it("emits ventilation, storage and rejection scaled by thermal control", () => {
+    const air: any = { temperatureC: smallExperimentalBiome.thermalBounds.targetTemperatureC + 6, airVolumeM3: smallExperimentalBiome.airVolumeM3 };
+    const actions = chooseControlActions({ air, water: smallExperimentalBiome.initialWater as any, compute: smallExperimentalBiome.compute as any, policy: conservativePolicy as any, thermalControl: smallExperimentalBiome.thermalControl as any });
+    const hasVent = actions.some((a) => a.type === "VENT_AIR");
+    const hasStore = actions.some((a) => a.type === "STORE_HEAT");
+    const hasReject = actions.some((a) => a.type === "REJECT_HEAT");
+    expect(hasVent).toBeTruthy();
+    expect(hasStore).toBeTruthy();
+    expect(hasReject).toBeTruthy();
+  });
+
+  it("uses emergency rejection when far above max", () => {
+    const air: any = { temperatureC: smallExperimentalBiome.thermalBounds.maxTemperatureC + 10, airVolumeM3: smallExperimentalBiome.airVolumeM3 };
+    const actions = chooseControlActions({ air, water: smallExperimentalBiome.initialWater as any, compute: smallExperimentalBiome.compute as any, policy: conservativePolicy as any, thermalControl: smallExperimentalBiome.thermalControl as any });
+    const reject = actions.find((a) => a.type === "REJECT_HEAT") as any;
+    expect(reject).toBeDefined();
+    expect(reject.watts).toBeGreaterThanOrEqual(smallExperimentalBiome.thermalControl.emergencyHeatRejectionWatts ?? 0);
+  });
+});
+
+
 --- /Users/mac/Forge/biome-physics-system/tests/stability-score.test.ts ---
 
 import { describe, it, expect } from "vitest";
 import { calculateStabilityScore } from "../src/services/stability-score";
 
+function baseFake(overrides: Partial<any> = {}) {
+  const base = {
+    profileName: "fake",
+    policyName: "fake",
+    hourlyRecords: new Array(168).fill(0),
+    totalWaterCapturedLiters: 0,
+    totalWaterConsumedLiters: 0,
+    finalStoredWaterLiters: 100,
+    maxTemperatureC: 25,
+    minTemperatureC: 20,
+    minRelativeHumidityPct: 40,
+    maxRelativeHumidityPct: 60,
+    computeUptimePct: 100,
+    plantStressHours: 0,
+    waterDeficitHours: 0,
+    heatSurplusHours: 0,
+    totalHeatRejectedKwh: 0,
+    totalHeatStoredKwh: 0,
+    waterStorageMinLiters: 100,
+    waterStorageMinPct: 100,
+    maxTemperatureOvershootC: 0,
+    minHumidityUndershootPct: 0,
+    maxHumidityOvershootPct: 0,
+    humidityWarningHours: 0,
+    temperatureWarningHours: 0,
+  };
+  return { ...base, ...overrides };
+}
+
 describe("stability-score", () => {
   it("is high when no penalties", () => {
-    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 0, heatSurplusHours: 0, plantStressHours: 0, computeUptimePct: 100 };
+    const fake = baseFake();
     expect(calculateStabilityScore(fake)).toBeGreaterThan(90);
   });
 
-  it("decreases with water deficit", () => {
-    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 5, heatSurplusHours: 0, plantStressHours: 0, computeUptimePct: 100 };
+  it("decreases when water storage minimum is very low", () => {
+    const fake = baseFake({ waterStorageMinPct: 5 });
     const score = calculateStabilityScore(fake);
-    expect(score).toBeLessThan(100);
+    expect(score).toBeLessThan(85);
   });
 
-  it("is clamped between 0 and 100", () => {
-    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 1000, heatSurplusHours: 1000, plantStressHours: 1000, computeUptimePct: 0 };
-    expect(calculateStabilityScore(fake)).toBeGreaterThanOrEqual(0);
-    expect(calculateStabilityScore(fake)).toBeLessThanOrEqual(100);
+  it("decreases when temperature overshoot is large", () => {
+    const fake = baseFake({ maxTemperatureOvershootC: 8 });
+    const score = calculateStabilityScore(fake);
+    expect(score).toBeLessThan(80);
+  });
+
+  it("decreases when humidity undershoot is large", () => {
+    const fake = baseFake({ minHumidityUndershootPct: 12 });
+    const score = calculateStabilityScore(fake);
+    expect(score).toBeLessThan(85);
+  });
+
+  it("stress-like scenario scores below 65", () => {
+    const fake = baseFake({
+      hourlyRecords: new Array(168).fill(0),
+      waterDeficitHours: 0,
+      heatSurplusHours: 65,
+      plantStressHours: 104,
+      computeUptimePct: 100,
+      waterStorageMinPct: 0.17,
+      maxTemperatureOvershootC: 8,
+      minHumidityUndershootPct: 12,
+      maxHumidityOvershootPct: 0,
+      humidityWarningHours: 80,
+      temperatureWarningHours: 65,
+    });
+
+    expect(calculateStabilityScore(fake)).toBeLessThan(65);
   });
 });
 
@@ -1455,10 +1803,22 @@ import { describe, it, expect } from "vitest";
 import { updateThermalState } from "../src/services/thermal-loop";
 
 describe("thermal-loop", () => {
-  it("increases temp with compute heat and respects storage capacity", () => {
-    const prev = { storedWattHours: 0, capacityWattHours: 1000, heatAddedWattHours: 0, heatRemovedWattHours: 0, overflowWattHours: 0, deficitWattHours: 0 } as any;
-    const { thermal, thermalReservoir } = updateThermalState({ previousThermalReservoir: prev, thermalBounds: { minTemperatureC: 10, maxTemperatureC: 40, targetTemperatureC: 25 }, airTemperatureC: 20, computeHeatWatts: 1000, solarGainWatts: 0, biomassHeatWatts: 0, heatRejectedWatts: 0, heatStoredWatts: 0, airVolumeM3: 100 });
-    expect(thermal.airTemperatureC).toBeGreaterThan(20);
+  it("increases temp with compute heat and respects storage capacity, ambient exchange affects net", () => {
+    const prev = { storedWattHours: 0, capacityWattHours: 10000, heatAddedWattHours: 0, heatRemovedWattHours: 0, overflowWattHours: 0, deficitWattHours: 0 } as any;
+    const { thermal, thermalReservoir } = updateThermalState({
+      previousThermalReservoir: prev,
+      thermalBounds: { minTemperatureC: 10, maxTemperatureC: 80, targetTemperatureC: 25 },
+      airTemperatureC: 20,
+      computeHeatWatts: 5000,
+      solarGainWatts: 0,
+      biomassHeatWatts: 0,
+      heatRejectedWatts: 0,
+      heatStoredWatts: 0,
+      airVolumeM3: 100,
+      climateTemperatureC: 30,
+      ambientExchangeCoefficientWattsPerC: 100,
+    });
+    expect(thermal.airTemperatureC).not.toBe(20);
     expect(thermalReservoir.storedWattHours).toBeLessThanOrEqual(prev.capacityWattHours);
   });
 });

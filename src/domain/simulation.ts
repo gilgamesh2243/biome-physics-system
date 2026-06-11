@@ -62,6 +62,15 @@ export interface BiomeSimulationResult {
   stabilityScore: number;
   totalHeatRejectedKwh?: number;
   totalHeatStoredKwh?: number;
+  waterStorageMinLiters: number;
+  waterStorageMinPct: number;
+
+  maxTemperatureOvershootC: number;
+  minHumidityUndershootPct: number;
+  maxHumidityOvershootPct: number;
+
+  humidityWarningHours: number;
+  temperatureWarningHours: number;
 }
 
 export interface ThermalControlCapacity {
