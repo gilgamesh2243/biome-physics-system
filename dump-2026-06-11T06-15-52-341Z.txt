@@ -1,0 +1,1503 @@
+
+
+--- /Users/mac/Forge/biome-physics-system/README.md ---
+
+# Biome Physics System
+
+Small TypeScript MVP for simulating flows and state transitions in a controlled biome coupled to compute heat.
+
+This project models water, air humidity, thermal storage, plant transpiration, compute waste heat, and simple control policies. It is a physics-ish flow-balance simulator for research prototyping — not a scientific or production-grade model.
+
+Quick start
+
+```bash
+npm install
+npm run typecheck
+npm test
+npm run dev
+npm run simulate:compute
+npm run compare:policies
+```
+
+Limitations
+
+- Deterministic, simplified equations
+- No external sensors, no hardware, no UI, no DB
+- Not a scientific HVAC or plant-model replacement
+
+
+--- /Users/mac/Forge/biome-physics-system/package.json ---
+
+{
+  "name": "biome-physics-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/examples/simulate-small-biome.ts",
+    "simulate:compute": "tsx src/examples/simulate-compute-greenhouse.ts",
+    "compare:policies": "tsx src/examples/compare-control-policies.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/air.ts ---
+
+import type {
+  Celsius,
+  CubicMeters,
+  CubicMetersPerHour,
+  Percent,
+  Ppm,
+} from "./units";
+
+export interface AirState {
+  temperatureC: Celsius;
+  relativeHumidityPct: Percent;
+  absoluteHumidityGm3: number;
+  airVolumeM3: CubicMeters;
+  airExchangeM3PerHour: CubicMetersPerHour;
+  co2Ppm?: Ppm;
+}
+
+export interface ExternalClimateCondition {
+  hour: number;
+  temperatureC: Celsius;
+  relativeHumidityPct: Percent;
+  solarGainWattsPerM2?: number;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/biomass.ts ---
+
+import type { LitersPerHour, Percent, SquareMeters } from "./units";
+
+export interface BiomassProfile {
+  plantedAreaM2: SquareMeters;
+  leafAreaIndex: number;
+  baseTranspirationLitersPerM2Hour: number;
+  idealTemperatureC: number;
+  idealRelativeHumidityPct: Percent;
+}
+
+export interface BiomassState {
+  plantedAreaM2: SquareMeters;
+  leafAreaIndex: number;
+  transpirationLitersPerHour: LitersPerHour;
+  waterDemandLitersPerHour: LitersPerHour;
+  growthIndex: number;
+  stressIndex: number;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/biome-state.ts ---
+
+import type { AirState } from "./air";
+import type { BiomassState } from "./biomass";
+import type { ComputeLoadState } from "./compute";
+import type { WaterReservoirState, ThermalReservoirState } from "./reservoirs";
+import type { ThermalState } from "./thermal";
+import type { BiomeWarning } from "./warnings";
+
+export interface BiomeState {
+  hourIndex: number;
+  air: AirState;
+  water: WaterReservoirState;
+  thermal: ThermalState;
+  thermalReservoir: ThermalReservoirState;
+  biomass: BiomassState;
+  compute: ComputeLoadState;
+  warnings: BiomeWarning[];
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/compute.ts ---
+
+import type { Percent, Watts } from "./units";
+
+export interface ComputeLoadProfile {
+  activeMachines: number;
+  wattsPerMachine: Watts;
+  utilizationPct: Percent;
+  coolingOverheadPct: Percent;
+}
+
+export interface ComputeLoadState {
+  activeMachines: number;
+  powerDrawWatts: Watts;
+  utilizationPct: Percent;
+  heatOutputWatts: Watts;
+  coolingRequiredWatts: Watts;
+  throttlingRequired: boolean;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/control-policy.ts ---
+
+import type { Liters, Percent, Watts, CubicMetersPerHour } from "./units";
+
+export type ControlAction =
+  | { type: "RUN_WATER_CAPTURE"; intensityPct: Percent }
+  | { type: "VENT_AIR"; airflowM3PerHour: CubicMetersPerHour }
+  | { type: "IRRIGATE"; liters: Liters }
+  | { type: "REJECT_HEAT"; watts: Watts }
+  | { type: "STORE_HEAT"; watts: Watts }
+  | { type: "THROTTLE_COMPUTE"; targetUtilizationPct: Percent }
+  | { type: "NOOP" };
+
+export interface ControlPolicy {
+  id: string;
+  name: string;
+
+  targetTemperatureC: number;
+  minTemperatureC: number;
+  maxTemperatureC: number;
+
+  minRelativeHumidityPct: Percent;
+  maxRelativeHumidityPct: Percent;
+
+  minWaterStorageLiters: Liters;
+  maxWaterStorageLiters: Liters;
+
+  allowComputeThrottle: boolean;
+  allowVenting: boolean;
+  allowHeatStorage: boolean;
+  allowWaterCapture: boolean;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/flows.ts ---
+
+import type {
+  Liters,
+  LitersPerHour,
+  Watts,
+  WattHours,
+  CubicMetersPerHour,
+} from "./units";
+
+export interface WaterFlow {
+  liters: Liters;
+  source: string;
+  sink: string;
+}
+
+export interface WaterFlowRate {
+  litersPerHour: LitersPerHour;
+  source: string;
+  sink: string;
+}
+
+export interface HeatFlow {
+  watts: Watts;
+  source: string;
+  sink: string;
+}
+
+export interface EnergyFlow {
+  wattHours: WattHours;
+  source: string;
+  sink: string;
+}
+
+export interface AirFlow {
+  cubicMetersPerHour: CubicMetersPerHour;
+  source: string;
+  sink: string;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/reservoirs.ts ---
+
+import type { Liters, WattHours } from "./units";
+
+export interface WaterReservoirState {
+  storedLiters: Liters;
+  capacityLiters: Liters;
+  capturedLitersThisHour: Liters;
+  consumedLitersThisHour: Liters;
+  evaporatedLitersThisHour: Liters;
+  condensedLitersThisHour: Liters;
+  deficitLiters: Liters;
+  overflowLiters: Liters;
+}
+
+export interface ThermalReservoirState {
+  storedWattHours: WattHours;
+  capacityWattHours: WattHours;
+  heatAddedWattHours: WattHours;
+  heatRemovedWattHours: WattHours;
+  overflowWattHours: WattHours;
+  deficitWattHours: WattHours;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/simulation.ts ---
+
+import type { ExternalClimateCondition } from "./air";
+import type { BiomassProfile } from "./biomass";
+import type { ComputeLoadProfile } from "./compute";
+import type { ControlAction, ControlPolicy } from "./control-policy";
+import type { WaterReservoirState, ThermalReservoirState } from "./reservoirs";
+import type { ThermalBounds } from "./thermal";
+import type { BiomeState } from "./biome-state";
+import type { Liters, CubicMeters } from "./units";
+
+export interface BiomeProfile {
+  id: string;
+  name: string;
+
+  airVolumeM3: CubicMeters;
+
+  initialWater: WaterReservoirState;
+  initialThermalReservoir: ThermalReservoirState;
+
+  biomass: BiomassProfile;
+  compute: ComputeLoadProfile;
+
+  thermalBounds: ThermalBounds;
+
+  waterCaptureLitersPerHour: Liters;
+  passiveCondensationLitersPerHour: Liters;
+}
+
+export interface BiomeSimulationInput {
+  profile: BiomeProfile;
+  climate: ExternalClimateCondition[];
+  controlPolicy: ControlPolicy;
+  hours: number;
+}
+
+export interface BiomeHourlyRecord {
+  hourIndex: number;
+  climateHour: number;
+  state: BiomeState;
+  actions: ControlAction[];
+}
+
+export interface BiomeSimulationResult {
+  profileName: string;
+  policyName: string;
+  hourlyRecords: BiomeHourlyRecord[];
+
+  totalWaterCapturedLiters: Liters;
+  totalWaterConsumedLiters: Liters;
+  finalStoredWaterLiters: Liters;
+
+  maxTemperatureC: number;
+  minTemperatureC: number;
+  minRelativeHumidityPct: number;
+  maxRelativeHumidityPct: number;
+
+  computeUptimePct: number;
+  plantStressHours: number;
+  waterDeficitHours: number;
+  heatSurplusHours: number;
+
+  stabilityScore: number;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/thermal.ts ---
+
+import type { Celsius, Watts, WattHours } from "./units";
+
+export interface ThermalState {
+  airTemperatureC: Celsius;
+  targetTemperatureC: Celsius;
+
+  computeHeatWatts: Watts;
+  solarGainWatts: Watts;
+  biomassHeatWatts: Watts;
+
+  coolingRemovedWatts: Watts;
+  heatRejectedWatts: Watts;
+  heatStoredWatts: Watts;
+
+  thermalStorageWh: WattHours;
+
+  heatSurplusWatts: Watts;
+  heatDeficitWatts: Watts;
+}
+
+export interface ThermalBounds {
+  minTemperatureC: Celsius;
+  maxTemperatureC: Celsius;
+  targetTemperatureC: Celsius;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/units.ts ---
+
+export type Celsius = number;
+export type Percent = number;
+export type Watts = number;
+export type WattHours = number;
+export type KilowattHours = number;
+export type Liters = number;
+export type LitersPerHour = number;
+export type CubicMeters = number;
+export type CubicMetersPerHour = number;
+export type SquareMeters = number;
+export type Ppm = number;
+export type Hour = number;
+export type ISODateTime = string;
+export type UUID = string;
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/warnings.ts ---
+
+export type BiomeWarning =
+  | "WATER_DEFICIT"
+  | "WATER_OVERFLOW"
+  | "LOW_HUMIDITY"
+  | "HIGH_HUMIDITY"
+  | "LOW_TEMPERATURE"
+  | "HIGH_TEMPERATURE"
+  | "HEAT_SURPLUS"
+  | "HEAT_DEFICIT"
+  | "THERMAL_STORAGE_FULL"
+  | "COMPUTE_THROTTLED"
+  | "PLANT_STRESS";
+
+
+--- /Users/mac/Forge/biome-physics-system/src/domain/water.ts ---
+
+import type { Liters, LitersPerHour } from "./units";
+
+export interface WaterDemandProfile {
+  plantLitersPerHour: LitersPerHour;
+  coolingLitersPerHour: LitersPerHour;
+  serviceLitersPerHour: LitersPerHour;
+}
+
+export interface WaterLoopResult {
+  storedLiters: Liters;
+  capturedLiters: Liters;
+  consumedLiters: Liters;
+  evaporatedLiters: Liters;
+  condensedLiters: Liters;
+  overflowLiters: Liters;
+  deficitLiters: Liters;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/biome-profiles.ts ---
+
+import type { BiomeProfile } from "../domain/simulation";
+
+export const smallExperimentalBiome: BiomeProfile = {
+  id: "biome_small_experimental",
+  name: "Small experimental biome",
+
+  airVolumeM3: 300,
+
+  initialWater: {
+    storedLiters: 300,
+    capacityLiters: 1000,
+    capturedLitersThisHour: 0,
+    consumedLitersThisHour: 0,
+    evaporatedLitersThisHour: 0,
+    condensedLitersThisHour: 0,
+    deficitLiters: 0,
+    overflowLiters: 0,
+  },
+
+  initialThermalReservoir: {
+    storedWattHours: 0,
+    capacityWattHours: 5000,
+    heatAddedWattHours: 0,
+    heatRemovedWattHours: 0,
+    overflowWattHours: 0,
+    deficitWattHours: 0,
+  },
+
+  biomass: {
+    plantedAreaM2: 25,
+    leafAreaIndex: 1.5,
+    baseTranspirationLitersPerM2Hour: 0.04,
+    idealTemperatureC: 26,
+    idealRelativeHumidityPct: 65,
+  },
+
+  compute: {
+    activeMachines: 4,
+    wattsPerMachine: 250,
+    utilizationPct: 60,
+    coolingOverheadPct: 35,
+  },
+
+  thermalBounds: {
+    minTemperatureC: 18,
+    maxTemperatureC: 32,
+    targetTemperatureC: 26,
+  },
+
+  waterCaptureLitersPerHour: 2,
+  passiveCondensationLitersPerHour: 0.1,
+};
+
+export const computeGreenhouseBiome: BiomeProfile = {
+  id: "biome_compute_greenhouse",
+  name: "Compute greenhouse biome",
+
+  airVolumeM3: 1200,
+
+  initialWater: {
+    storedLiters: 1200,
+    capacityLiters: 5000,
+    capturedLitersThisHour: 0,
+    consumedLitersThisHour: 0,
+    evaporatedLitersThisHour: 0,
+    condensedLitersThisHour: 0,
+    deficitLiters: 0,
+    overflowLiters: 0,
+  },
+
+  initialThermalReservoir: {
+    storedWattHours: 0,
+    capacityWattHours: 30000,
+    heatAddedWattHours: 0,
+    heatRemovedWattHours: 0,
+    overflowWattHours: 0,
+    deficitWattHours: 0,
+  },
+
+  biomass: {
+    plantedAreaM2: 100,
+    leafAreaIndex: 2.2,
+    baseTranspirationLitersPerM2Hour: 0.035,
+    idealTemperatureC: 27,
+    idealRelativeHumidityPct: 68,
+  },
+
+  compute: {
+    activeMachines: 30,
+    wattsPerMachine: 180,
+    utilizationPct: 65,
+    coolingOverheadPct: 40,
+  },
+
+  thermalBounds: {
+    minTemperatureC: 18,
+    maxTemperatureC: 33,
+    targetTemperatureC: 27,
+  },
+
+  waterCaptureLitersPerHour: 8,
+  passiveCondensationLitersPerHour: 0.5,
+};
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/climate-profiles.ts ---
+
+import type { ExternalClimateCondition } from "../domain/air";
+
+export const floridaHumidDay: ExternalClimateCondition[] = [
+  { hour: 0, temperatureC: 25, relativeHumidityPct: 92, solarGainWattsPerM2: 0 },
+  { hour: 1, temperatureC: 25, relativeHumidityPct: 93, solarGainWattsPerM2: 0 },
+  { hour: 2, temperatureC: 24, relativeHumidityPct: 94, solarGainWattsPerM2: 0 },
+  { hour: 3, temperatureC: 24, relativeHumidityPct: 95, solarGainWattsPerM2: 0 },
+  { hour: 4, temperatureC: 24, relativeHumidityPct: 96, solarGainWattsPerM2: 0 },
+  { hour: 5, temperatureC: 24, relativeHumidityPct: 96, solarGainWattsPerM2: 0 },
+  { hour: 6, temperatureC: 25, relativeHumidityPct: 94, solarGainWattsPerM2: 50 },
+  { hour: 7, temperatureC: 26, relativeHumidityPct: 90, solarGainWattsPerM2: 150 },
+  { hour: 8, temperatureC: 28, relativeHumidityPct: 84, solarGainWattsPerM2: 300 },
+  { hour: 9, temperatureC: 30, relativeHumidityPct: 76, solarGainWattsPerM2: 500 },
+  { hour: 10, temperatureC: 32, relativeHumidityPct: 68, solarGainWattsPerM2: 650 },
+  { hour: 11, temperatureC: 33, relativeHumidityPct: 62, solarGainWattsPerM2: 750 },
+  { hour: 12, temperatureC: 34, relativeHumidityPct: 58, solarGainWattsPerM2: 800 },
+  { hour: 13, temperatureC: 35, relativeHumidityPct: 54, solarGainWattsPerM2: 750 },
+  { hour: 14, temperatureC: 35, relativeHumidityPct: 52, solarGainWattsPerM2: 650 },
+  { hour: 15, temperatureC: 34, relativeHumidityPct: 55, solarGainWattsPerM2: 500 },
+  { hour: 16, temperatureC: 33, relativeHumidityPct: 60, solarGainWattsPerM2: 300 },
+  { hour: 17, temperatureC: 32, relativeHumidityPct: 66, solarGainWattsPerM2: 150 },
+  { hour: 18, temperatureC: 30, relativeHumidityPct: 74, solarGainWattsPerM2: 50 },
+  { hour: 19, temperatureC: 28, relativeHumidityPct: 82, solarGainWattsPerM2: 0 },
+  { hour: 20, temperatureC: 27, relativeHumidityPct: 86, solarGainWattsPerM2: 0 },
+  { hour: 21, temperatureC: 26, relativeHumidityPct: 89, solarGainWattsPerM2: 0 },
+  { hour: 22, temperatureC: 26, relativeHumidityPct: 90, solarGainWattsPerM2: 0 },
+  { hour: 23, temperatureC: 25, relativeHumidityPct: 91, solarGainWattsPerM2: 0 },
+];
+
+export const arizonaDryDay: ExternalClimateCondition[] = [
+  { hour: 0, temperatureC: 22, relativeHumidityPct: 42, solarGainWattsPerM2: 0 },
+  { hour: 1, temperatureC: 21, relativeHumidityPct: 44, solarGainWattsPerM2: 0 },
+  { hour: 2, temperatureC: 20, relativeHumidityPct: 46, solarGainWattsPerM2: 0 },
+  { hour: 3, temperatureC: 19, relativeHumidityPct: 48, solarGainWattsPerM2: 0 },
+  { hour: 4, temperatureC: 18, relativeHumidityPct: 50, solarGainWattsPerM2: 0 },
+  { hour: 5, temperatureC: 18, relativeHumidityPct: 51, solarGainWattsPerM2: 0 },
+  { hour: 6, temperatureC: 19, relativeHumidityPct: 48, solarGainWattsPerM2: 50 },
+  { hour: 7, temperatureC: 22, relativeHumidityPct: 40, solarGainWattsPerM2: 150 },
+  { hour: 8, temperatureC: 26, relativeHumidityPct: 32, solarGainWattsPerM2: 300 },
+  { hour: 9, temperatureC: 30, relativeHumidityPct: 26, solarGainWattsPerM2: 550 },
+  { hour: 10, temperatureC: 33, relativeHumidityPct: 22, solarGainWattsPerM2: 700 },
+  { hour: 11, temperatureC: 35, relativeHumidityPct: 19, solarGainWattsPerM2: 800 },
+  { hour: 12, temperatureC: 37, relativeHumidityPct: 17, solarGainWattsPerM2: 850 },
+  { hour: 13, temperatureC: 38, relativeHumidityPct: 16, solarGainWattsPerM2: 800 },
+  { hour: 14, temperatureC: 39, relativeHumidityPct: 15, solarGainWattsPerM2: 700 },
+  { hour: 15, temperatureC: 39, relativeHumidityPct: 15, solarGainWattsPerM2: 550 },
+  { hour: 16, temperatureC: 38, relativeHumidityPct: 16, solarGainWattsPerM2: 350 },
+  { hour: 17, temperatureC: 36, relativeHumidityPct: 18, solarGainWattsPerM2: 150 },
+  { hour: 18, temperatureC: 33, relativeHumidityPct: 22, solarGainWattsPerM2: 50 },
+  { hour: 19, temperatureC: 30, relativeHumidityPct: 26, solarGainWattsPerM2: 0 },
+  { hour: 20, temperatureC: 27, relativeHumidityPct: 31, solarGainWattsPerM2: 0 },
+  { hour: 21, temperatureC: 25, relativeHumidityPct: 35, solarGainWattsPerM2: 0 },
+  { hour: 22, temperatureC: 24, relativeHumidityPct: 38, solarGainWattsPerM2: 0 },
+  { hour: 23, temperatureC: 23, relativeHumidityPct: 40, solarGainWattsPerM2: 0 },
+];
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/compare-control-policies.ts ---
+
+import { arizonaDryDay } from "./climate-profiles";
+import { computeGreenhouseBiome } from "./biome-profiles";
+import {
+  conservativePolicy,
+  aggressiveComputePolicy,
+  waterPreservationPolicy,
+} from "./control-policies";
+import { simulateBiome } from "../services/biome-simulator";
+import { formatNumber, formatPct } from "./format-output";
+
+const policies = [
+  conservativePolicy,
+  aggressiveComputePolicy,
+  waterPreservationPolicy,
+];
+
+console.log("");
+console.log("Control Policy Comparison");
+console.log("Biome: Compute greenhouse biome");
+console.log("Climate: Arizona dry day");
+console.log("");
+console.log(
+  "Policy                         Score  Final Water L  Temp Max C  RH Min %  Compute Uptime  Plant Stress  Water Deficit  Heat Surplus"
+);
+console.log(
+  "-----------------------------------------------------------------------------------------------------------------------------"
+);
+
+for (const policy of policies) {
+  const result = simulateBiome({
+    profile: computeGreenhouseBiome,
+    climate: arizonaDryDay,
+    controlPolicy: policy,
+    hours: 24 * 7,
+  });
+
+  console.log(
+    [
+      policy.name.padEnd(30),
+      formatNumber(result.stabilityScore, 1).padStart(5),
+      formatNumber(result.finalStoredWaterLiters, 2).padStart(14),
+      formatNumber(result.maxTemperatureC, 1).padStart(11),
+      formatNumber(result.minRelativeHumidityPct, 1).padStart(9),
+      formatPct(result.computeUptimePct).padStart(15),
+      String(result.plantStressHours).padStart(13),
+      String(result.waterDeficitHours).padStart(14),
+      String(result.heatSurplusHours).padStart(13),
+    ].join("  ")
+  );
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/control-policies.ts ---
+
+import type { ControlPolicy } from "../domain/control-policy";
+
+export const conservativePolicy: ControlPolicy = {
+  id: "policy_conservative",
+  name: "Conservative stability policy",
+
+  targetTemperatureC: 26,
+  minTemperatureC: 18,
+  maxTemperatureC: 31,
+
+  minRelativeHumidityPct: 45,
+  maxRelativeHumidityPct: 85,
+
+  minWaterStorageLiters: 100,
+  maxWaterStorageLiters: 900,
+
+  allowComputeThrottle: true,
+  allowVenting: true,
+  allowHeatStorage: true,
+  allowWaterCapture: true,
+};
+
+export const aggressiveComputePolicy: ControlPolicy = {
+  id: "policy_aggressive_compute",
+  name: "Aggressive compute policy",
+
+  targetTemperatureC: 28,
+  minTemperatureC: 16,
+  maxTemperatureC: 36,
+
+  minRelativeHumidityPct: 35,
+  maxRelativeHumidityPct: 90,
+
+  minWaterStorageLiters: 50,
+  maxWaterStorageLiters: 4800,
+
+  allowComputeThrottle: false,
+  allowVenting: true,
+  allowHeatStorage: true,
+  allowWaterCapture: true,
+};
+
+export const waterPreservationPolicy: ControlPolicy = {
+  id: "policy_water_preservation",
+  name: "Water preservation policy",
+
+  targetTemperatureC: 27,
+  minTemperatureC: 18,
+  maxTemperatureC: 33,
+
+  minRelativeHumidityPct: 40,
+  maxRelativeHumidityPct: 88,
+
+  minWaterStorageLiters: 500,
+  maxWaterStorageLiters: 4500,
+
+  allowComputeThrottle: true,
+  allowVenting: false,
+  allowHeatStorage: true,
+  allowWaterCapture: true,
+};
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/format-output.ts ---
+
+export function formatNumber(value: number | undefined, decimals: number): string {
+  if (value == null || Number.isNaN(value)) return "-";
+  return value.toFixed(decimals);
+}
+
+export function formatPct(value: number | undefined): string {
+  if (value == null || Number.isNaN(value)) return "-";
+  return `${value.toFixed(1)}%`;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/simulate-compute-greenhouse.ts ---
+
+import { floridaHumidDay, arizonaDryDay } from "./climate-profiles";
+import { computeGreenhouseBiome } from "./biome-profiles";
+import { aggressiveComputePolicy } from "./control-policies";
+import { simulateBiome } from "../services/biome-simulator";
+import { formatNumber, formatPct } from "./format-output";
+
+for (const scenario of [
+  { name: "Florida humid day", climate: floridaHumidDay },
+  { name: "Arizona dry day", climate: arizonaDryDay },
+]) {
+  const result = simulateBiome({
+    profile: computeGreenhouseBiome,
+    climate: scenario.climate,
+    controlPolicy: aggressiveComputePolicy,
+    hours: 24 * 7,
+  });
+
+  console.log("");
+  console.log(`Scenario: ${scenario.name}`);
+  console.log(`Biome: ${result.profileName}`);
+  console.log(`Policy: ${result.policyName}`);
+  console.log(`Stability score: ${formatNumber(result.stabilityScore, 1)}`);
+  console.log(`Water captured L: ${formatNumber(result.totalWaterCapturedLiters, 2)}`);
+  console.log(`Water consumed L: ${formatNumber(result.totalWaterConsumedLiters, 2)}`);
+  console.log(`Final stored water L: ${formatNumber(result.finalStoredWaterLiters, 2)}`);
+  console.log(`Temp range C: ${formatNumber(result.minTemperatureC, 1)} - ${formatNumber(result.maxTemperatureC, 1)}`);
+  console.log(`RH range %: ${formatNumber(result.minRelativeHumidityPct, 1)} - ${formatNumber(result.maxRelativeHumidityPct, 1)}`);
+  console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
+  console.log(`Plant stress hours: ${result.plantStressHours}`);
+  console.log(`Water deficit hours: ${result.waterDeficitHours}`);
+  console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/examples/simulate-small-biome.ts ---
+
+import { floridaHumidDay } from "./climate-profiles";
+import { smallExperimentalBiome } from "./biome-profiles";
+import { conservativePolicy } from "./control-policies";
+import { simulateBiome } from "../services/biome-simulator";
+import { formatNumber, formatPct } from "./format-output";
+
+const result = simulateBiome({
+  profile: smallExperimentalBiome,
+  climate: floridaHumidDay,
+  controlPolicy: conservativePolicy,
+  hours: 24 * 7,
+});
+
+console.log("");
+console.log(`Biome: ${result.profileName}`);
+console.log(`Policy: ${result.policyName}`);
+console.log(`Hours simulated: ${result.hourlyRecords.length}`);
+console.log("");
+console.log(`Stability score: ${formatNumber(result.stabilityScore, 1)}`);
+console.log(`Total water captured L: ${formatNumber(result.totalWaterCapturedLiters, 2)}`);
+console.log(`Total water consumed L: ${formatNumber(result.totalWaterConsumedLiters, 2)}`);
+console.log(`Final stored water L: ${formatNumber(result.finalStoredWaterLiters, 2)}`);
+console.log(`Temperature range C: ${formatNumber(result.minTemperatureC, 1)} - ${formatNumber(result.maxTemperatureC, 1)}`);
+console.log(`Humidity range %: ${formatNumber(result.minRelativeHumidityPct, 1)} - ${formatNumber(result.maxRelativeHumidityPct, 1)}`);
+console.log(`Compute uptime: ${formatPct(result.computeUptimePct)}`);
+console.log(`Plant stress hours: ${result.plantStressHours}`);
+console.log(`Water deficit hours: ${result.waterDeficitHours}`);
+console.log(`Heat surplus hours: ${result.heatSurplusHours}`);
+console.log("");
+
+
+--- /Users/mac/Forge/biome-physics-system/src/index.ts ---
+
+export * from "./domain/units";
+export * from "./domain/flows";
+export * from "./domain/reservoirs";
+export * from "./domain/air";
+export * from "./domain/water";
+export * from "./domain/thermal";
+export * from "./domain/biomass";
+export * from "./domain/compute";
+export * from "./domain/control-policy";
+export * from "./domain/biome-state";
+export * from "./domain/simulation";
+export * from "./domain/warnings";
+
+export * from "./services/psychrometrics";
+export * from "./services/water-loop";
+export * from "./services/thermal-loop";
+export * from "./services/air-loop";
+export * from "./services/biomass-loop";
+export * from "./services/compute-loop";
+export * from "./services/control-policy-engine";
+export * from "./services/biome-simulator";
+export * from "./services/stability-score";
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/air-loop.ts ---
+
+import type { AirState, ExternalClimateCondition } from "../domain/air";
+import { calculateAbsoluteHumidityGm3, clampPercent } from "./psychrometrics";
+
+export function updateAirState(input: {
+  previous: AirState;
+  climate: ExternalClimateCondition;
+  ventAirflowM3PerHour: number;
+  transpirationLitersPerHour: number;
+  waterCaptureEfficiencyPct: number;
+  airVolumeM3: number;
+}): AirState {
+  // ventilation mixes external air proportional to vent/volume
+  const externalPull = Math.max(0, Math.min(1, input.ventAirflowM3PerHour / Math.max(1, input.airVolumeM3)));
+
+  const externalTemp = input.climate.temperatureC;
+  const externalRh = input.climate.relativeHumidityPct;
+
+  const mixedTemp = input.previous.temperatureC * (1 - externalPull) + externalTemp * externalPull;
+
+  // transpiration adds moisture; approximate: 1 liter water = 1000 g; distributed into air volume (gm3)
+  const transpirationG = input.transpirationLitersPerHour * 1000 / Math.max(0.0001, input.airVolumeM3);
+
+  // water capture removes a small fraction of moisture from air proportional to efficiency
+  const captureRemovalG = (input.waterCaptureEfficiencyPct / 100) * transpirationG * 0.5;
+
+  const prevAbs = input.previous.absoluteHumidityGm3;
+
+  const nextAbs = Math.max(0, prevAbs * (1 - externalPull) + (externalRh ? calculateAbsoluteHumidityGm3({ temperatureC: externalTemp, relativeHumidityPct: externalRh }) * externalPull : prevAbs) + transpirationG - captureRemovalG);
+
+  // compute RH from absolute humidity approximation by invert via psychrometrics? We'll approximate by scaling
+  const approxRh = clampPercent((nextAbs / Math.max(0.1, calculateAbsoluteHumidityGm3({ temperatureC: mixedTemp, relativeHumidityPct: 100 }))) * 100);
+
+  return {
+    temperatureC: mixedTemp,
+    relativeHumidityPct: approxRh,
+    absoluteHumidityGm3: nextAbs,
+    airVolumeM3: input.previous.airVolumeM3,
+    airExchangeM3PerHour: input.ventAirflowM3PerHour,
+    co2Ppm: input.previous.co2Ppm,
+  };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/biomass-loop.ts ---
+
+import type { AirState } from "../domain/air";
+import type { BiomassProfile, BiomassState } from "../domain/biomass";
+
+export function calculateBiomassState(input: {
+  profile: BiomassProfile;
+  air: AirState;
+}): BiomassState {
+  const { profile, air } = input;
+
+  const tempStress = Math.min(
+    1,
+    Math.abs(air.temperatureC - profile.idealTemperatureC) / 20
+  );
+
+  const humidityStress = Math.min(
+    1,
+    Math.abs(air.relativeHumidityPct - profile.idealRelativeHumidityPct) / 60
+  );
+
+  const stressIndex = Math.max(tempStress, humidityStress);
+
+  const transpirationMultiplier = 1 + stressIndex * 0.75;
+
+  const transpirationLitersPerHour =
+    profile.plantedAreaM2 *
+    profile.baseTranspirationLitersPerM2Hour *
+    profile.leafAreaIndex *
+    transpirationMultiplier;
+
+  const growthIndex = Math.max(0, 1 - stressIndex);
+
+  return {
+    plantedAreaM2: profile.plantedAreaM2,
+    leafAreaIndex: profile.leafAreaIndex,
+    transpirationLitersPerHour,
+    waterDemandLitersPerHour: transpirationLitersPerHour,
+    growthIndex,
+    stressIndex,
+  };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/biome-simulator.ts ---
+
+import type { AirState } from "../domain/air";
+import type { BiomeState } from "../domain/biome-state";
+import type { ControlAction } from "../domain/control-policy";
+import type {
+  BiomeHourlyRecord,
+  BiomeSimulationInput,
+  BiomeSimulationResult,
+} from "../domain/simulation";
+import type { BiomeWarning } from "../domain/warnings";
+import { calculateAbsoluteHumidityGm3 } from "./psychrometrics";
+import { calculateComputeLoad } from "./compute-loop";
+import { calculateBiomassState } from "./biomass-loop";
+import { updateWaterReservoir } from "./water-loop";
+import { updateThermalState } from "./thermal-loop";
+import { updateAirState } from "./air-loop";
+import { chooseControlActions } from "./control-policy-engine";
+import { calculateStabilityScore } from "./stability-score";
+
+function validateSimulationInput(input: BiomeSimulationInput) {
+  if (input.hours <= 0) throw new Error("hours must be positive");
+}
+
+export function simulateBiome(
+  input: BiomeSimulationInput
+): BiomeSimulationResult {
+  validateSimulationInput(input);
+
+  const records: BiomeHourlyRecord[] = [];
+
+  let water = input.profile.initialWater;
+  let thermalReservoir = input.profile.initialThermalReservoir;
+
+  const firstClimate = input.climate[0];
+
+  let air: AirState = {
+    temperatureC: firstClimate.temperatureC,
+    relativeHumidityPct: firstClimate.relativeHumidityPct,
+    absoluteHumidityGm3: calculateAbsoluteHumidityGm3({
+      temperatureC: firstClimate.temperatureC,
+      relativeHumidityPct: firstClimate.relativeHumidityPct,
+    }),
+    airVolumeM3: input.profile.airVolumeM3,
+    airExchangeM3PerHour: 0,
+  };
+
+  for (let hourIndex = 0; hourIndex < input.hours; hourIndex++) {
+    const climate = input.climate[hourIndex % input.climate.length];
+
+    const compute = calculateComputeLoad(input.profile.compute);
+
+    const biomass = calculateBiomassState({ profile: input.profile.biomass, air });
+
+    const actions = chooseControlActions({ air, water, compute, policy: input.controlPolicy });
+
+    const captureIntensity = actions.find((a) => a.type === "RUN_WATER_CAPTURE") ? input.profile.waterCaptureLitersPerHour : 0;
+
+    const ventAirflow = actions.find((a) => a.type === "VENT_AIR") ? (actions.find((a) => a.type === "VENT_AIR") as any).airflowM3PerHour : 0;
+
+    const heatRejected = actions.filter((a) => a.type === "REJECT_HEAT").reduce((s, a) => s + (a.type === "REJECT_HEAT" ? a.watts : 0), 0);
+
+    const heatStored = actions.filter((a) => a.type === "STORE_HEAT").reduce((s, a) => s + (a.type === "STORE_HEAT" ? a.watts : 0), 0);
+
+    // update thermal
+    const { thermal, thermalReservoir: newThermalReservoir } = updateThermalState({
+      previousThermalReservoir: thermalReservoir,
+      thermalBounds: input.profile.thermalBounds,
+      airTemperatureC: air.temperatureC,
+      computeHeatWatts: compute.heatOutputWatts,
+      solarGainWatts: climate.solarGainWattsPerM2 ?? 0,
+      biomassHeatWatts: 0,
+      heatRejectedWatts: heatRejected,
+      heatStoredWatts: heatStored,
+      airVolumeM3: input.profile.airVolumeM3,
+    });
+
+    thermalReservoir = newThermalReservoir;
+
+    // update water reservoir
+    const captured = captureIntensity;
+
+    const updatedWater = updateWaterReservoir({
+      previous: water,
+      capturedLiters: captured,
+      passiveCondensationLiters: input.profile.passiveCondensationLitersPerHour,
+      biomass,
+      coolingWaterLiters: 0,
+      serviceWaterLiters: 0,
+    });
+
+    water = updatedWater;
+
+    // update air
+    const nextAir = updateAirState({
+      previous: air,
+      climate,
+      ventAirflowM3PerHour: ventAirflow,
+      transpirationLitersPerHour: biomass.transpirationLitersPerHour,
+      waterCaptureEfficiencyPct: captureIntensity > 0 ? 50 : 0,
+      airVolumeM3: input.profile.airVolumeM3,
+    });
+
+    air = nextAir;
+
+    const warnings = collectWarnings({
+      air,
+      water,
+      thermal,
+      biomass,
+      actions,
+      policy: input.controlPolicy,
+    });
+
+    const state: BiomeState = {
+      hourIndex,
+      air,
+      water,
+      thermal,
+      thermalReservoir,
+      biomass,
+      compute,
+      warnings,
+    };
+
+    records.push({ hourIndex, climateHour: climate.hour, state, actions });
+  }
+
+  const resultBase = buildSimulationResult({ profileName: input.profile.name, policyName: input.controlPolicy.name, records });
+
+  const stabilityScore = calculateStabilityScore(resultBase as any);
+
+  const result: BiomeSimulationResult = { ...resultBase, stabilityScore } as BiomeSimulationResult;
+
+  return result;
+}
+
+function getRunWaterCaptureIntensity(actions: ControlAction[]): number {
+  const action = actions.find((a) => a.type === "RUN_WATER_CAPTURE");
+  return action?.type === "RUN_WATER_CAPTURE" ? action.intensityPct : 0;
+}
+
+function collectWarnings(input: {
+  air: AirState;
+  water: BiomeState["water"];
+  thermal: BiomeState["thermal"];
+  biomass: BiomeState["biomass"];
+  actions: ControlAction[];
+  policy: BiomeSimulationInput["controlPolicy"];
+}): BiomeWarning[] {
+  const warnings: BiomeWarning[] = [];
+
+  if (input.water.deficitLiters > 0) warnings.push("WATER_DEFICIT");
+  if (input.water.overflowLiters > 0) warnings.push("WATER_OVERFLOW");
+
+  if (input.air.relativeHumidityPct < input.policy.minRelativeHumidityPct) {
+    warnings.push("LOW_HUMIDITY");
+  }
+
+  if (input.air.relativeHumidityPct > input.policy.maxRelativeHumidityPct) {
+    warnings.push("HIGH_HUMIDITY");
+  }
+
+  if (input.air.temperatureC < input.policy.minTemperatureC) {
+    warnings.push("LOW_TEMPERATURE");
+  }
+
+  if (input.air.temperatureC > input.policy.maxTemperatureC) {
+    warnings.push("HIGH_TEMPERATURE");
+  }
+
+  if (input.thermal.heatSurplusWatts > 0) warnings.push("HEAT_SURPLUS");
+  if (input.thermal.heatDeficitWatts > 0) warnings.push("HEAT_DEFICIT");
+
+  if (input.biomass.stressIndex > 0.65) warnings.push("PLANT_STRESS");
+
+  if (input.actions.some((a) => a.type === "THROTTLE_COMPUTE")) {
+    warnings.push("COMPUTE_THROTTLED");
+  }
+
+  return warnings;
+}
+
+function buildSimulationResult(input: {
+  profileName: string;
+  policyName: string;
+  records: BiomeHourlyRecord[];
+}) {
+  const records = input.records;
+
+  const totalWaterCapturedLiters = records.reduce(
+    (sum, r) => sum + r.state.water.capturedLitersThisHour,
+    0
+  );
+
+  const totalWaterConsumedLiters = records.reduce(
+    (sum, r) => sum + r.state.water.consumedLitersThisHour,
+    0
+  );
+
+  const finalStoredWaterLiters = records.at(-1)?.state.water.storedLiters ?? 0;
+
+  const temperatures = records.map((r) => r.state.air.temperatureC);
+  const humidities = records.map((r) => r.state.air.relativeHumidityPct);
+
+  const maxTemperatureC = Math.max(...temperatures);
+  const minTemperatureC = Math.min(...temperatures);
+  const minRelativeHumidityPct = Math.min(...humidities);
+  const maxRelativeHumidityPct = Math.max(...humidities);
+
+  const plantStressHours = records.filter((r) => r.state.warnings.includes("PLANT_STRESS")).length;
+
+  const waterDeficitHours = records.filter((r) => r.state.warnings.includes("WATER_DEFICIT")).length;
+
+  const heatSurplusHours = records.filter((r) => r.state.warnings.includes("HEAT_SURPLUS")).length;
+
+  const throttledHours = records.filter((r) => r.state.warnings.includes("COMPUTE_THROTTLED")).length;
+
+  const computeUptimePct = ((records.length - throttledHours) / Math.max(1, records.length)) * 100;
+
+  return {
+    profileName: input.profileName,
+    policyName: input.policyName,
+    hourlyRecords: records,
+    totalWaterCapturedLiters,
+    totalWaterConsumedLiters,
+    finalStoredWaterLiters,
+    maxTemperatureC,
+    minTemperatureC,
+    minRelativeHumidityPct,
+    maxRelativeHumidityPct,
+    computeUptimePct,
+    plantStressHours,
+    waterDeficitHours,
+    heatSurplusHours,
+    stabilityScore: 0 as unknown as number,
+  };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/compute-loop.ts ---
+
+import type { ComputeLoadProfile, ComputeLoadState } from "../domain/compute";
+
+export function calculateComputeLoad(
+  profile: ComputeLoadProfile
+): ComputeLoadState {
+  const utilization = profile.utilizationPct / 100;
+
+  const powerDrawWatts =
+    profile.activeMachines * profile.wattsPerMachine * utilization;
+
+  const heatOutputWatts = powerDrawWatts;
+
+  const coolingRequiredWatts =
+    heatOutputWatts * (profile.coolingOverheadPct / 100);
+
+  return {
+    activeMachines: profile.activeMachines,
+    powerDrawWatts,
+    utilizationPct: profile.utilizationPct,
+    heatOutputWatts,
+    coolingRequiredWatts,
+    throttlingRequired: false,
+  };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/control-policy-engine.ts ---
+
+import type { AirState } from "../domain/air";
+import type { ControlAction, ControlPolicy } from "../domain/control-policy";
+import type { ComputeLoadState } from "../domain/compute";
+import type { WaterReservoirState } from "../domain/reservoirs";
+
+export function chooseControlActions(input: {
+  air: AirState;
+  water: WaterReservoirState;
+  compute: ComputeLoadState;
+  policy: ControlPolicy;
+}): ControlAction[] {
+  const actions: ControlAction[] = [];
+
+  if (
+    input.policy.allowWaterCapture &&
+    input.water.storedLiters < input.policy.maxWaterStorageLiters
+  ) {
+    actions.push({ type: "RUN_WATER_CAPTURE", intensityPct: 100 });
+  }
+
+  if (
+    input.policy.allowVenting &&
+    input.air.temperatureC > input.policy.targetTemperatureC
+  ) {
+    actions.push({ type: "VENT_AIR", airflowM3PerHour: input.air.airVolumeM3 * 0.5 });
+  }
+
+  if (
+    input.policy.allowHeatStorage &&
+    input.air.temperatureC > input.policy.targetTemperatureC
+  ) {
+    actions.push({ type: "STORE_HEAT", watts: 500 });
+  }
+
+  if (input.air.temperatureC > input.policy.maxTemperatureC) {
+    actions.push({ type: "REJECT_HEAT", watts: 1000 });
+  }
+
+  if (
+    input.policy.allowComputeThrottle &&
+    input.air.temperatureC > input.policy.maxTemperatureC + 3
+  ) {
+    actions.push({ type: "THROTTLE_COMPUTE", targetUtilizationPct: 50 });
+  }
+
+  if (actions.length === 0) {
+    actions.push({ type: "NOOP" });
+  }
+
+  return actions;
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/psychrometrics.ts ---
+
+export function calculateAbsoluteHumidityGm3(input: {
+  temperatureC: number;
+  relativeHumidityPct: number;
+}): number {
+  const { temperatureC, relativeHumidityPct } = input;
+
+  const saturationVaporPressureHpa =
+    6.112 * Math.exp((17.67 * temperatureC) / (temperatureC + 243.5));
+
+  const actualVaporPressureHpa =
+    saturationVaporPressureHpa * (relativeHumidityPct / 100);
+
+  return (2.1674 * actualVaporPressureHpa * 100) / (273.15 + temperatureC);
+}
+
+export function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/stability-score.ts ---
+
+import type { BiomeSimulationResult } from "../domain/simulation";
+
+export function calculateStabilityScore(result: Omit<BiomeSimulationResult, "stabilityScore">): number {
+  const totalHours = Math.max(1, result.hourlyRecords.length);
+
+  const waterPenalty = (result.waterDeficitHours / totalHours) * 35;
+  const heatPenalty = (result.heatSurplusHours / totalHours) * 30;
+  const plantPenalty = (result.plantStressHours / totalHours) * 20;
+  const computePenalty = (100 - result.computeUptimePct) * 0.15;
+
+  const score = 100 - waterPenalty - heatPenalty - plantPenalty - computePenalty;
+
+  return Math.max(0, Math.min(100, score));
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/thermal-loop.ts ---
+
+import type { ThermalReservoirState } from "../domain/reservoirs";
+import type { ThermalBounds, ThermalState } from "../domain/thermal";
+import type { WattHours, Watts } from "../domain/units";
+
+export function updateThermalState(input: {
+  previousThermalReservoir: ThermalReservoirState;
+  thermalBounds: ThermalBounds;
+  airTemperatureC: number;
+  computeHeatWatts: Watts;
+  solarGainWatts: Watts;
+  biomassHeatWatts: Watts;
+  heatRejectedWatts: Watts;
+  heatStoredWatts: Watts;
+  airVolumeM3: number;
+}): { thermal: ThermalState; thermalReservoir: ThermalReservoirState } {
+  const netWatts = input.computeHeatWatts + input.solarGainWatts + input.biomassHeatWatts - input.heatRejectedWatts - input.heatStoredWatts;
+
+  const heatAddedWh = Math.max(0, netWatts) / 1; // per hour, 1 W => 1 Wh per hour
+  const heatRemovedWh = Math.max(0, -netWatts) / 1;
+
+  const rawThermalStorage = input.previousThermalReservoir.storedWattHours + heatAddedWh - heatRemovedWh;
+
+  const overflowWattHours = rawThermalStorage > input.previousThermalReservoir.capacityWattHours ? rawThermalStorage - input.previousThermalReservoir.capacityWattHours : 0;
+  const deficitWattHours = rawThermalStorage < 0 ? Math.abs(rawThermalStorage) : 0;
+
+  const storedWattHours = Math.max(0, Math.min(input.previousThermalReservoir.capacityWattHours, rawThermalStorage));
+
+  // naive temperature change: assume heat capacity proportional to air volume; tune factor
+  const temperatureChangeC = netWatts / Math.max(1, input.airVolumeM3) / 100;
+  const nextAirTemp = input.airTemperatureC + temperatureChangeC;
+
+  const heatSurplusWatts = nextAirTemp > input.thermalBounds.maxTemperatureC ? netWatts : 0;
+  const heatDeficitWatts = nextAirTemp < input.thermalBounds.minTemperatureC ? Math.abs(netWatts) : 0;
+
+  const thermal: ThermalState = {
+    airTemperatureC: nextAirTemp,
+    targetTemperatureC: input.thermalBounds.targetTemperatureC,
+    computeHeatWatts: input.computeHeatWatts,
+    solarGainWatts: input.solarGainWatts,
+    biomassHeatWatts: input.biomassHeatWatts,
+    coolingRemovedWatts: input.heatRejectedWatts,
+    heatRejectedWatts: input.heatRejectedWatts,
+    heatStoredWatts: input.heatStoredWatts,
+    thermalStorageWh: storedWattHours,
+    heatSurplusWatts,
+    heatDeficitWatts,
+  };
+
+  const thermalReservoir: ThermalReservoirState = {
+    storedWattHours: storedWattHours,
+    capacityWattHours: input.previousThermalReservoir.capacityWattHours,
+    heatAddedWattHours: heatAddedWh,
+    heatRemovedWattHours: heatRemovedWh,
+    overflowWattHours,
+    deficitWattHours,
+  };
+
+  return { thermal, thermalReservoir };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/src/services/water-loop.ts ---
+
+import type { BiomassState } from "../domain/biomass";
+import type { WaterReservoirState } from "../domain/reservoirs";
+import type { Liters } from "../domain/units";
+
+export function updateWaterReservoir(input: {
+  previous: WaterReservoirState;
+  capturedLiters: Liters;
+  passiveCondensationLiters: Liters;
+  biomass: BiomassState;
+  coolingWaterLiters: Liters;
+  serviceWaterLiters: Liters;
+}): WaterReservoirState {
+  const consumedLiters =
+    input.biomass.waterDemandLitersPerHour +
+    input.coolingWaterLiters +
+    input.serviceWaterLiters;
+
+  const totalIn = input.capturedLiters + input.passiveCondensationLiters;
+
+  const rawStored = input.previous.storedLiters + totalIn - consumedLiters;
+
+  const overflowLiters =
+    rawStored > input.previous.capacityLiters
+      ? rawStored - input.previous.capacityLiters
+      : 0;
+
+  const deficitLiters = rawStored < 0 ? Math.abs(rawStored) : 0;
+
+  const storedLiters = Math.max(0, Math.min(input.previous.capacityLiters, rawStored));
+
+  return {
+    storedLiters,
+    capacityLiters: input.previous.capacityLiters,
+    capturedLitersThisHour: input.capturedLiters,
+    consumedLitersThisHour: consumedLiters,
+    evaporatedLitersThisHour: 0,
+    condensedLitersThisHour: input.passiveCondensationLiters,
+    deficitLiters,
+    overflowLiters,
+  };
+}
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/air-loop.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { updateAirState } from "../src/services/air-loop";
+
+describe("air-loop", () => {
+  it("transpiration increases RH and capture decreases RH, venting pulls toward outside", () => {
+    const prev = { temperatureC: 25, relativeHumidityPct: 50, absoluteHumidityGm3: 10, airVolumeM3: 100, airExchangeM3PerHour: 0 } as any;
+    const climate = { hour: 0, temperatureC: 25, relativeHumidityPct: 40 } as any;
+    const withTransp = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCaptureEfficiencyPct: 0, airVolumeM3: 100 });
+    expect(withTransp.relativeHumidityPct).toBeGreaterThanOrEqual(prev.relativeHumidityPct);
+
+    const withCapture = updateAirState({ previous: prev, climate, ventAirflowM3PerHour: 0, transpirationLitersPerHour: 1, waterCaptureEfficiencyPct: 100, airVolumeM3: 100 });
+    expect(withCapture.relativeHumidityPct).toBeLessThanOrEqual(withTransp.relativeHumidityPct);
+
+    const vented = updateAirState({ previous: prev, climate: { hour: 0, temperatureC: 10, relativeHumidityPct: 20 }, ventAirflowM3PerHour: 100, transpirationLitersPerHour: 0, waterCaptureEfficiencyPct: 0, airVolumeM3: 100 });
+    expect(vented.temperatureC).toBeLessThan(prev.temperatureC);
+    expect(vented.relativeHumidityPct).toBeGreaterThanOrEqual(0);
+    expect(vented.relativeHumidityPct).toBeLessThanOrEqual(100);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/biomass-loop.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { calculateBiomassState } from "../src/services/biomass-loop";
+
+describe("biomass-loop", () => {
+  it("computes water demand and stress affects growth", () => {
+    const profile = { plantedAreaM2: 10, leafAreaIndex: 1, baseTranspirationLitersPerM2Hour: 0.05, idealTemperatureC: 25, idealRelativeHumidityPct: 60 } as any;
+    const air = { temperatureC: 25, relativeHumidityPct: 60, absoluteHumidityGm3: 10, airVolumeM3: 100 } as any;
+    const state = calculateBiomassState({ profile, air });
+    expect(state.waterDemandLitersPerHour).toBeGreaterThan(0);
+    const stressed = calculateBiomassState({ profile, air: { ...air, temperatureC: 5 } as any });
+    expect(stressed.stressIndex).toBeGreaterThan(state.stressIndex);
+    expect(stressed.growthIndex).toBeLessThan(state.growthIndex);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/biome-simulator.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { smallExperimentalBiome } from "../src/examples/biome-profiles";
+import { floridaHumidDay } from "../src/examples/climate-profiles";
+import { conservativePolicy } from "../src/examples/control-policies";
+import { simulateBiome } from "../src/services/biome-simulator";
+
+describe("biome-simulator", () => {
+  it("returns requested number of hours and non-negative water", () => {
+    const result = simulateBiome({ profile: smallExperimentalBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 24 * 7 });
+    expect(result.hourlyRecords.length).toBe(24 * 7);
+    expect(result.totalWaterCapturedLiters).toBeGreaterThanOrEqual(0);
+    expect(result.finalStoredWaterLiters).toBeGreaterThanOrEqual(0);
+    expect(result.stabilityScore).toBeGreaterThanOrEqual(0);
+    expect(result.stabilityScore).toBeLessThanOrEqual(100);
+  });
+
+  it("throws on invalid hours", () => {
+    expect(() => simulateBiome({ profile: smallExperimentalBiome, climate: floridaHumidDay, controlPolicy: conservativePolicy, hours: 0 })).toThrow();
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/compute-loop.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { calculateComputeLoad } from "../src/services/compute-loop";
+
+describe("compute-loop", () => {
+  it("calculates power draw and heat output", () => {
+    const profile = { activeMachines: 10, wattsPerMachine: 200, utilizationPct: 50, coolingOverheadPct: 20 };
+    const state = calculateComputeLoad(profile as any);
+    expect(state.powerDrawWatts).toBeCloseTo(10 * 200 * 0.5);
+    expect(state.heatOutputWatts).toBeCloseTo(state.powerDrawWatts);
+    expect(state.coolingRequiredWatts).toBeCloseTo(state.heatOutputWatts * 0.2);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/stability-score.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { calculateStabilityScore } from "../src/services/stability-score";
+
+describe("stability-score", () => {
+  it("is high when no penalties", () => {
+    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 0, heatSurplusHours: 0, plantStressHours: 0, computeUptimePct: 100 };
+    expect(calculateStabilityScore(fake)).toBeGreaterThan(90);
+  });
+
+  it("decreases with water deficit", () => {
+    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 5, heatSurplusHours: 0, plantStressHours: 0, computeUptimePct: 100 };
+    const score = calculateStabilityScore(fake);
+    expect(score).toBeLessThan(100);
+  });
+
+  it("is clamped between 0 and 100", () => {
+    const fake: any = { hourlyRecords: new Array(10).fill(0), waterDeficitHours: 1000, heatSurplusHours: 1000, plantStressHours: 1000, computeUptimePct: 0 };
+    expect(calculateStabilityScore(fake)).toBeGreaterThanOrEqual(0);
+    expect(calculateStabilityScore(fake)).toBeLessThanOrEqual(100);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/thermal-loop.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { updateThermalState } from "../src/services/thermal-loop";
+
+describe("thermal-loop", () => {
+  it("increases temp with compute heat and respects storage capacity", () => {
+    const prev = { storedWattHours: 0, capacityWattHours: 1000, heatAddedWattHours: 0, heatRemovedWattHours: 0, overflowWattHours: 0, deficitWattHours: 0 } as any;
+    const { thermal, thermalReservoir } = updateThermalState({ previousThermalReservoir: prev, thermalBounds: { minTemperatureC: 10, maxTemperatureC: 40, targetTemperatureC: 25 }, airTemperatureC: 20, computeHeatWatts: 1000, solarGainWatts: 0, biomassHeatWatts: 0, heatRejectedWatts: 0, heatStoredWatts: 0, airVolumeM3: 100 });
+    expect(thermal.airTemperatureC).toBeGreaterThan(20);
+    expect(thermalReservoir.storedWattHours).toBeLessThanOrEqual(prev.capacityWattHours);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tests/water-loop.test.ts ---
+
+import { describe, it, expect } from "vitest";
+import { updateWaterReservoir } from "../src/services/water-loop";
+
+describe("water-loop", () => {
+  it("increases stored when captured > consumed", () => {
+    const prev = { storedLiters: 100, capacityLiters: 200, capturedLitersThisHour: 0, consumedLitersThisHour: 0, evaporatedLitersThisHour: 0, condensedLitersThisHour: 0, deficitLiters: 0, overflowLiters: 0 } as any;
+    const biomass = { waterDemandLitersPerHour: 5 } as any;
+    const next = updateWaterReservoir({ previous: prev, capturedLiters: 50, passiveCondensationLiters: 0, biomass, coolingWaterLiters: 0, serviceWaterLiters: 0 });
+    expect(next.storedLiters).toBeGreaterThan(prev.storedLiters);
+  });
+
+  it("produces deficit when consumed > captured", () => {
+    const prev = { storedLiters: 10, capacityLiters: 100, capturedLitersThisHour: 0, consumedLitersThisHour: 0, evaporatedLitersThisHour: 0, condensedLitersThisHour: 0, deficitLiters: 0, overflowLiters: 0 } as any;
+    const biomass = { waterDemandLitersPerHour: 50 } as any;
+    const next = updateWaterReservoir({ previous: prev, capturedLiters: 0, passiveCondensationLiters: 0, biomass, coolingWaterLiters: 0, serviceWaterLiters: 0 });
+    expect(next.deficitLiters).toBeGreaterThan(0);
+  });
+});
+
+
+--- /Users/mac/Forge/biome-physics-system/tsconfig.json ---
+
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

@@ -1,0 +1,14 @@
+export type Celsius = number;
+export type Percent = number;
+export type Watts = number;
+export type WattHours = number;
+export type KilowattHours = number;
+export type Liters = number;
+export type LitersPerHour = number;
+export type CubicMeters = number;
+export type CubicMetersPerHour = number;
+export type SquareMeters = number;
+export type Ppm = number;
+export type Hour = number;
+export type ISODateTime = string;
+export type UUID = string;
